@@ -1,4 +1,6 @@
 import torch.nn as nn
+import torch
+import numpy as np
 
 
 # def f(n):
@@ -68,3 +70,19 @@ class lmelloEmbeddingNet(nn.Module):
 
     def get_embedding(self, x):
         return self.forward(x)
+
+
+def extract_embeddings(dataloader, model, use_cuda=True):
+    with torch.no_grad():
+        model.eval()
+        embeddings = np.zeros((len(dataloader.dataset), 2))
+        labels = np.zeros(len(dataloader.dataset))
+        k = 0
+        for samples, target in dataloader:
+            if use_cuda:
+                samples = samples.cuda()
+            embeddings[k:k+len(samples)] = model.get_embedding(samples).data.cpu().numpy()
+            labels[k:k+len(samples)] = target.numpy()
+            k += len(samples)
+    return embeddings, labels
+########################

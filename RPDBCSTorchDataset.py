@@ -19,7 +19,6 @@ class RPDBCSTorchDataset(torch.utils.data.Dataset):
             # print(self.getScalerParameters())
             allmean = np.mean(self.scaler.mean_)
             allvar = np.mean(self.scaler.var_)
-            print(">>", allmean, allvar**0.5)
             for i in range(len(self.scaler.mean_)):
                 self.scaler.mean_[i] = allmean
                 self.scaler.var_[i] = allvar
