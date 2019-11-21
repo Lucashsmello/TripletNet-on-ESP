@@ -4,14 +4,18 @@ from siamese_triplet.utils import AllTripletSelector, HardestNegativeTripletSele
 from networks import LarsHuyEmbeddingNet, lmelloEmbeddingNet, extract_embeddings
 from siamese_triplet.datasets import BalancedBatchSampler
 import torch
-from visualization import plot_embeddings, plot_embeddings3d
+from visualization import plot_embeddings, plot_embeddings3d, pairplot_embeddings
 from rpdbcs.datahandler.dataset import readDataset
 from rpdbcs.datahandler.dataview import COLOR_CODES
-from RPDBCSTorchDataset import RPDBCSTorchDataset
+from datahandler import RPDBCSTorchDataset
+import argparse
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--loadmodel', type=str)
+args = parser.parse_args()
 
 D = readDataset('data/data-11-11-2019_2/freq.csv', 'data/data-11-11-2019_2/labels.csv',
-                remove_first=100, nsigs=25000, npoints=20000)
+                remove_first=100, nsigs=3300, npoints=20000)
 D.normalize(f_hz="min")
 D.shuffle()
 train_dataset = RPDBCSTorchDataset(D, train=True, signal_size=11028, holdout=0.7)
@@ -41,20 +45,34 @@ triplet_train_loader = torch.utils.data.DataLoader(
 triplet_test_loader = torch.utils.data.DataLoader(
     test_dataset, batch_sampler=test_batch_sampler, **kwargs)
 
-classifier_model = train_classifier(train_loader, test_loader, lmelloEmbeddingNet(), use_cuda=cuda)
+num_outputs = 7
+'''
+classifier_model = train_classifier(train_loader, test_loader,
+                                    lmelloEmbeddingNet(num_outputs), use_cuda=cuda)
 train_embeddings_baseline, train_labels_baseline = extract_embeddings(
-    train_loader, classifier_model)
-val_embeddings_baseline, val_labels_baseline = extract_embeddings(test_loader, classifier_model)
+    train_loader, classifier_model, num_outputs=num_outputs)
+val_embeddings_baseline, val_labels_baseline = extract_embeddings(
+    test_loader, classifier_model, num_outputs=num_outputs)
 plot_embeddings(train_embeddings_baseline, train_labels_baseline, myclasses)
 plot_embeddings(val_embeddings_baseline, val_labels_baseline, myclasses)
+'''
 
+triplet_model = lmelloEmbeddingNet(num_outputs)
+if(cuda):
+    triplet_model.cuda()
 
-triplet_model = train_tripletNetwork(triplet_train_loader, triplet_test_loader,
-                                     lmelloEmbeddingNet(),
-                                     RandomNegativeTripletSelector, margin=0.5, use_cuda=cuda)
+if(args.loadmodel):
+    checkpoint = torch.load(args.loadmodel)
+    triplet_model.load_state_dict(checkpoint['state_dict'])
+else:
+    triplet_model = train_tripletNetwork(triplet_train_loader, None,
+                                         triplet_model,
+                                         RandomNegativeTripletSelector, margin=0.5, use_cuda=cuda)
 train_embeddings_tl, train_labels_tl = extract_embeddings(
-    train_loader, triplet_model, use_cuda=cuda)
+    train_loader, triplet_model, num_outputs=num_outputs, use_cuda=cuda)
 val_embeddings_tl, val_labels_tl = extract_embeddings(
-    test_loader, triplet_model, use_cuda=cuda)
-plot_embeddings(train_embeddings_tl, train_labels_tl, myclasses)
-plot_embeddings(val_embeddings_tl, val_labels_tl, myclasses)
+    test_loader, triplet_model, num_outputs=num_outputs, use_cuda=cuda)
+pairplot_embeddings(train_embeddings_tl, train_labels_tl, myclasses)
+pairplot_embeddings(val_embeddings_tl, val_labels_tl, myclasses)
+# plot_embeddings(train_embeddings_tl, train_labels_tl, myclasses)
+# plot_embeddings(val_embeddings_tl, val_labels_tl, myclasses)

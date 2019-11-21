@@ -3,7 +3,23 @@ from sklearn.preprocessing import StandardScaler
 import numpy as np
 
 
-class RPDBCSTorchDataset(torch.utils.data.Dataset):
+class BasicTorchDataset(torch.utils.data.Dataset):
+    def __init__(self, feats_matrix, targets, targets_name):
+        self.M = feats_matrix
+        self.data = torch.unsqueeze(torch.tensor(self.M, dtype=torch.float32), 1)
+        self.targets = torch.tensor(targets, dtype=torch.long)
+        self.targets_name = targets_name
+
+    def __getitem__(self, i):
+        label = self.targets[i].item()
+        sample = self.data[i]
+        return sample, label
+
+    def __len__(self):
+        return len(self.data)
+
+
+class RPDBCSTorchDataset(BasicTorchDataset):
     def __init__(self, rpdbcs_data, train, signal_size, scaler=None, holdout=0.67):
         holdout_index = int(holdout*len(rpdbcs_data))
         if(train):
@@ -25,10 +41,9 @@ class RPDBCSTorchDataset(torch.utils.data.Dataset):
         else:
             self.scaler = scaler
         M = self.scaler.transform(M)
-        self.data = torch.unsqueeze(torch.tensor(M, dtype=torch.float32), 1)
-        targets, self.targets_name = rpdbcs_data.getMulticlassTargets()
+        targets, targets_name = rpdbcs_data.getMulticlassTargets()
         targets = targets[begin:end]
-        self.targets = torch.tensor(targets.values, dtype=torch.long)
+        super().__init__(M, targets.values, targets_name)
         self.train = train
 
     def __getitem__(self, i):
