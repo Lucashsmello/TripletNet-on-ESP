@@ -3,14 +3,6 @@ import torch
 import numpy as np
 
 
-# def f(n):
-#     c1=(n-9)/4
-#     c2=(c1-9)/4
-#     c3=(c2-9)/4
-#     c4=(c3-9)/4
-#     return (c1,c2,c3,c4)
-
-
 class LarsHuyEmbeddingNet(nn.Module):
     def __init__(self):
         super(LarsHuyEmbeddingNet, self).__init__()
@@ -44,14 +36,15 @@ class LarsHuyEmbeddingNet(nn.Module):
 
 
 class lmelloEmbeddingNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_outputs=2):
         super(lmelloEmbeddingNet, self).__init__()
         self.convnet = nn.Sequential(nn.Conv1d(1, 16, 5), nn.PReLU(),
                                      nn.MaxPool1d(4, stride=4),
                                      nn.Conv1d(16, 32, 5), nn.PReLU(),
                                      nn.MaxPool1d(4, stride=4),
                                      nn.Conv1d(32, 64, 5), nn.PReLU(),
-                                     nn.MaxPool1d(4, stride=4))
+                                     nn.MaxPool1d(4, stride=4)
+                                     )
 
         self.fc = nn.Sequential(nn.Linear(64 * 171, 128),
                                 nn.PReLU(),
@@ -59,7 +52,7 @@ class lmelloEmbeddingNet(nn.Module):
                                 nn.Linear(128, 64),
                                 nn.PReLU(),
                                 nn.Dropout(p=0.1),
-                                nn.Linear(64, 2)
+                                nn.Linear(64, num_outputs)
                                 )
 
     def forward(self, x):
@@ -72,10 +65,10 @@ class lmelloEmbeddingNet(nn.Module):
         return self.forward(x)
 
 
-def extract_embeddings(dataloader, model, use_cuda=True):
+def extract_embeddings(dataloader, model, num_outputs=2, use_cuda=True):
     with torch.no_grad():
         model.eval()
-        embeddings = np.zeros((len(dataloader.dataset), 2))
+        embeddings = np.zeros((len(dataloader.dataset), num_outputs))
         labels = np.zeros(len(dataloader.dataset))
         k = 0
         for samples, target in dataloader:
