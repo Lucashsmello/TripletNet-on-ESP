@@ -4,9 +4,8 @@ import numpy as np
 
 
 class BasicTorchDataset(torch.utils.data.Dataset):
-    def __init__(self, feats_matrix, targets, targets_name):
-        self.M = feats_matrix
-        self.data = torch.unsqueeze(torch.tensor(self.M, dtype=torch.float32), 1)
+    def __init__(self, feats_matrix, targets, targets_name=None):
+        self.data = torch.unsqueeze(torch.tensor(feats_matrix, dtype=torch.float32), 1)
         self.targets = torch.tensor(targets, dtype=torch.long)
         self.targets_name = targets_name
 
@@ -45,14 +44,6 @@ class RPDBCSTorchDataset(BasicTorchDataset):
         targets = targets[begin:end]
         super().__init__(M, targets.values, targets_name)
         self.train = train
-
-    def __getitem__(self, i):
-        label = self.targets[i].item()
-        sample = self.data[i]
-        return sample, label
-
-    def __len__(self):
-        return len(self.data)
 
     def getScalerParameters(self):
         return (self.scaler.mean_, self.scaler.var_**0.5)
