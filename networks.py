@@ -65,17 +65,25 @@ class lmelloEmbeddingNet(nn.Module):
         return self.forward(x)
 
 
-def extract_embeddings(dataloader, model, num_outputs=2, use_cuda=True):
+def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_labels=True):
+    if(num_outputs <= 0):
+        for last_module in model.modules():
+            pass
+        num_outputs = last_module.out_features
     with torch.no_grad():
         model.eval()
         embeddings = np.zeros((len(dataloader.dataset), num_outputs))
-        labels = np.zeros(len(dataloader.dataset))
+        if(with_labels):
+            labels = np.zeros(len(dataloader.dataset))
         k = 0
         for samples, target in dataloader:
             if use_cuda:
                 samples = samples.cuda()
             embeddings[k:k+len(samples)] = model.get_embedding(samples).data.cpu().numpy()
-            labels[k:k+len(samples)] = target.numpy()
+            if(with_labels):
+                labels[k:k+len(samples)] = target.numpy()
             k += len(samples)
-    return embeddings, labels
+    if(with_labels):
+        return embeddings, labels
+    return embeddings
 ########################

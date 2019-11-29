@@ -14,8 +14,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--loadmodel', type=str)
 args = parser.parse_args()
 
-D = readDataset('data/data-11-11-2019_2/freq.csv', 'data/data-11-11-2019_2/labels.csv',
-                remove_first=100, nsigs=3300, npoints=20000)
+D = readDataset('data/data_classified_v4/freq.csv', 'data/data_classified_v4/labels.csv',
+                remove_first=100, nsigs=20000, npoints=20000)
 D.normalize(f_hz="min")
 D.shuffle()
 train_dataset = RPDBCSTorchDataset(D, train=True, signal_size=11028, holdout=0.7)
@@ -45,7 +45,7 @@ triplet_train_loader = torch.utils.data.DataLoader(
 triplet_test_loader = torch.utils.data.DataLoader(
     test_dataset, batch_sampler=test_batch_sampler, **kwargs)
 
-num_outputs = 7
+num_outputs = 6
 '''
 classifier_model = train_classifier(train_loader, test_loader,
                                     lmelloEmbeddingNet(num_outputs), use_cuda=cuda)
