@@ -52,9 +52,9 @@ def main(save_file):
                     remove_first=100, nsigs=33000, npoints=20000)
     D.normalize(f_hz="min")
     D.shuffle()
-    train_dataset = RPDBCSTorchDataset(D, train=True, signal_size=11028, holdout=0.8)
+    train_dataset = RPDBCSTorchDataset(D, train=True, signal_size=11028, holdout=0.9)
     test_dataset = RPDBCSTorchDataset(D, train=False, signal_size=11028,
-                                      scaler=train_dataset.scaler, holdout=0.8)
+                                      scaler=train_dataset.scaler, holdout=0.9)
     myclasses = train_dataset.targets_name
     assert(len(myclasses) == len(test_dataset.targets_name))
     # myclasses = {c: (myclasses[c], COLOR_CODES[myclasses[c]]) for c in myclasses}

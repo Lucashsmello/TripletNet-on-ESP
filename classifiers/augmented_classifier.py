@@ -70,21 +70,25 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
 
 
 class EmbeddingWrapper:
-    def __init__(self, base_dir=None):
+    def __init__(self, base_dir=None, num_outputs=8):
         self.fold_number = 1
         self.base_dir = base_dir
+        self.num_outputs = num_outputs
 
     def train(self, X, y):
         global FOLD_ID
         FOLD_ID += 1
         self.scaler = fitScaler(X)
-        num_outputs = 8
-        self.embedding_net = lmelloEmbeddingNet(num_outputs)
+
+        self.embedding_net = lmelloEmbeddingNet(self.num_outputs)
         model_loaded = False
 
         if(self.base_dir is not None):
-            fpath = "%s/%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                           X.shape[0], X.shape[1], sum(y))
+            if(self.base_dir[-3:] == '.pt' or self.base_dir[-4:] == '.pth'):
+                fpath = self.base_dir
+            else:
+                fpath = "%s/%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
+                                               X.shape[0], X.shape[1], sum(y))
             model_loaded = _loadTorchModel(fpath, self.embedding_net)
 
         if(not model_loaded):
