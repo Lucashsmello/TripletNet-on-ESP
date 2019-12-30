@@ -10,7 +10,7 @@ _COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
            '#bcbd22', '#17becf']
 
 
-def pairplot_embeddings(embeddings, targets, classes=None):
+def pairplot_embeddings(embeddings, targets, classes=None, show=True):
     data = {'f%d' % (i+1): embeddings[:, i] for i in range(embeddings.shape[1])}
     df = pd.DataFrame(data)
     if(classes is None):
@@ -24,7 +24,8 @@ def pairplot_embeddings(embeddings, targets, classes=None):
     # sns.pairplot(df, hue="class", diag_kind='hist', kind='scatter',
     #            palette=mypalette, plot_kws={'alpha': 0.5})
     #plt.savefig('%d_extracted.png' % embeddings.shape[0])
-    plt.show()
+    if(show):
+        plt.show()
 
 
 def plot_embeddings(embeddings, targets, classes, xlim=None, ylim=None):
