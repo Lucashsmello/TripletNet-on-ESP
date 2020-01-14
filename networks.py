@@ -43,7 +43,7 @@ class BrunaEmbeddingNet(nn.Module):
 
 
 class lmelloEmbeddingNet(nn.Module):
-    def __init__(self, num_outputs=2, num_knownfeats=0):
+    def __init__(self, num_outputs, num_knownfeats=0):
         super(lmelloEmbeddingNet, self).__init__()
         self.num_knownfeats = num_knownfeats
         self.convnet = nn.Sequential(
@@ -85,20 +85,21 @@ class lmelloEmbeddingNet2(lmelloEmbeddingNet):
         super(lmelloEmbeddingNet, self).__init__()
         self.num_knownfeats = num_knownfeats
         self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
+            nn.Conv1d(1, 16, 5), nn.PReLU(),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
+            nn.Conv1d(16, 32, 5), nn.PReLU(),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
+            nn.Conv1d(32, 64, 5), nn.PReLU(),
             nn.MaxPool1d(4, stride=4)
         )
 
         self.fc = nn.Sequential(nn.Linear(64 * 94+num_knownfeats, 192),
-                                nn.LeakyReLU(negative_slope=0.05),
+                                nn.PReLU(),
                                 nn.Linear(192, 64),
-                                nn.LeakyReLU(negative_slope=0.05),
+                                nn.PReLU(),
                                 nn.Linear(64, num_outputs)
                                 )
+
 
 def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_labels=True):
     if(num_outputs <= 0):
