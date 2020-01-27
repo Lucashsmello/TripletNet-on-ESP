@@ -120,24 +120,30 @@ def getDeepClassifiers(num_predefined_feats):
     clfs = []
     # clfs.append((ClassifierConvNet(base_dir="saved_models/ClassifierConvNet", nclasses=5), "ConvNet"))
     baseclfs_std = getBaseClassifiers(('scale', StandardScaler()))
-    baseclfs = getBaseClassifiers()
-    for c, cname in baseclfs:
-        augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net")
-        augclf = GridSearchCV(augclf, {
-            'learning_rate': [1e-4, 1e-3, 1e-2],
-            'num_subepochs': [20, 30, 40],
-            'batch_size': [4, 8, 16]
-        }, scoring=scorer, cv=sampler)
-        clfs.append((augclf, "Aug-%s" % cname))
+    # baseclfs = getBaseClassifiers()
+    # for c, cname in baseclfs:
+    #     augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net")
+    #     augclf = GridSearchCV(augclf, {
+    #         'learning_rate': [1e-4, 1e-3, 1e-2],
+    #         'num_subepochs': [20, 30, 40],
+    #         'batch_size': [4, 8, 16]
+    #     }, scoring=scorer, cv=sampler)
+    #     clfs.append((augclf, "Aug-%s" % cname))
 
     for c, cname in baseclfs_std:
-        clfs.append((ClassifierConvNet2(base_dir="saved_models/ClassifierConvNet", nclasses=5, base_classif=c),
-                     "ConvNet-%s" % cname))
+        augclf2 = ClassifierConvNet2(
+            base_dir="saved_models/ClassifierConvNet", nclasses=5, base_classif=c)
+        augclf2 = GridSearchCV(augclf2, {
+            'learning_rate': [1e-4, 1e-3, 1e-2],
+            'num_steps_decay': [20, 30, 40],
+            'batch_size': [128, 256, 512]
+        }, scoring=scorer, cv=sampler)
+        clfs.append((augclf2, "ConvNet-%s" % cname))
     return clfs
 
 
 D = readDataset('data/data_classified_v6/freq.csv', 'data/data_classified_v6/labels.csv',
-                remove_first=100, nsigs=10000, npoints=10800)
+                remove_first=100, nsigs=20000, npoints=10800)
 # T, _ = D.getMulticlassTargets()
 # D.remove((T[T == 0].index).values)
 D.normalize(f_hz="min")
@@ -176,7 +182,7 @@ Valid Options:
         'mutual_info_score', 'neg_log_loss', 'neg_mean_absolute_error', 'neg_mean_squared_error', 'neg_mean_squared_log_error', 'neg_median_absolute_error', 'normalized_mutual_info_score', 'precision', 'precision_macro', 'precision_micro', 'precision_samples', 'precision_weighted', 'r2', 'recall', 'recall_macro', 'recall_micro', 'recall_samples', 'recall_weighted', 'roc_auc', 'v_measure_score']
 """
 metrics = ['precision_macro', 'recall_macro', 'f1_macro',
-   'f1_micro', 'accuracy']
+           'f1_micro', 'accuracy']
 metrics = {m: m for m in metrics}
 # metrics['roc_auc_macro'] = make_scorer(
 #     sklearn.metrics.roc_auc_score, average="macro", needs_proba=True, multi_class="ovo")

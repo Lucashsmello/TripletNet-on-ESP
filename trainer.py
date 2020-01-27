@@ -7,7 +7,7 @@ from siamese_triplet.datasets import BalancedBatchSampler
 import siamese_triplet.trainer
 
 
-def train_classifier(train_loader, test_loader, embedding_net, n_epochs=15, use_cuda=True):
+def train_classifier(train_loader, test_loader, embedding_net, lr, num_steps_decay=35, n_epochs=15, use_cuda=True):
     nclasses = len(train_loader.dataset.targets.unique())
     if(use_cuda):
         embedding_net.cuda()
@@ -16,8 +16,8 @@ def train_classifier(train_loader, test_loader, embedding_net, n_epochs=15, use_
         model.cuda()
     # loss_fn = torch.nn.NLLLoss()
     loss_fn = torch.nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, 35, gamma=0.1, last_epoch=-1)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, num_steps_decay, gamma=0.9, last_epoch=-1)
     log_interval = 50000
     siamese_triplet.trainer.fit(train_loader, test_loader, model, loss_fn,
                                 optimizer, scheduler, n_epochs, use_cuda, log_interval,
@@ -34,7 +34,7 @@ def train_tripletNetworkAdvanced(data_train, triplet_test_loader, model,
     log_interval = 2000
     g = 1
     b = 1
-    kwargs = {'num_workers': 1, 'pin_memory': True}
+    kwargs = {'num_workers': 2, 'pin_memory': True}
 
     for i in range(niterations):
         T = data_train.getTargets()
@@ -54,7 +54,7 @@ def train_tripletNetworkAdvanced(data_train, triplet_test_loader, model,
                 triplet_sel = strat['triplet-selector'](margin)
             loss_fn = OnlineTripletLoss(margin, triplet_sel)
             optimizer = optim.Adam(model.parameters(), lr=lr)
-            scheduler = optim.lr_scheduler.StepLR(optimizer, 10, gamma=0.1, last_epoch=-1)
+            scheduler = optim.lr_scheduler.StepLR(optimizer, 20, gamma=0.9, last_epoch=-1)
             siamese_triplet.trainer.fit(triplet_train_loader, triplet_test_loader, model, loss_fn,
                                         optimizer, scheduler, n_epochs, use_cuda, log_interval,
                                         metrics=[AverageNonzeroTripletsMetric()])

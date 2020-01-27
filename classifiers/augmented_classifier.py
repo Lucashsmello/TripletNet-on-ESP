@@ -61,6 +61,9 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
         self.nclasses = nclasses
         self.num_outputs = 8
         self.model_loaded = False
+        self.learning_rate = 1e-3
+        self.batch_size = 500
+        self.num_steps_decay = 20
 
     def load(self, fpath):
         self.embedding_net = lmelloEmbeddingNet(self.num_outputs)
@@ -79,7 +82,8 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
         X, y = check_X_y(X, y)
         # Store the classes seen during fit
         self.classes_ = unique_labels(y)
-        assert(len(self.classes_) == self.nclasses)
+        assert(len(self.classes_) ==
+               self.nclasses), "Number of classes in training data should be %d" % self.nclasses
         # self.scaler = fitScaler(X)
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, y)
@@ -88,8 +92,10 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
             if(self.base_dir[-3:] == '.pt' or self.base_dir[-4:] == '.pth'):
                 fpath = self.base_dir
             else:
-                fpath = "%s/%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                               X.shape[0], X.shape[1], sum(y))
+                fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
+                                                           X.shape[0], X.shape[1], sum(
+                                                               y), self.num_outputs,
+                                                           1e+6 * self.learning_rate, self.num_steps_decay, self.batch_size)
             self.netmodel = ClassificationNet(self.embedding_net, n_classes=self.nclasses)
 
             self.model_loaded = _loadTorchModel(fpath, self.netmodel)
@@ -98,11 +104,13 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
             class_sample_count = np.bincount(y)
             weights = torch.FloatTensor([1.0/class_sample_count[l] for l in y])
             weights.cuda()
-            sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, 1000)
-            kwargs = {'num_workers': 1, 'pin_memory': True}
-            dataloader = torch.utils.data.DataLoader(D, shuffle=False, sampler=sampler, **kwargs)
+            sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(y))
+            kwargs = {'num_workers': 2, 'pin_memory': True}
+            dataloader = torch.utils.data.DataLoader(
+                D, shuffle=False, sampler=sampler, batch_size=self.batch_size, **kwargs)
             self.netmodel = train_classifier(
-                dataloader, None, self.embedding_net, n_epochs=100, use_cuda=True)
+                dataloader, None, self.embedding_net,
+                lr=self.learning_rate, num_steps_decay=self.num_steps_decay,  n_epochs=200)
             # Return the classifier
             if(self.base_dir is not None):
                 self.save(fpath)
@@ -111,9 +119,9 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 1, 'pin_memory': True}
+        kwargs = {'num_workers': 2, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
-        preds = np.zeros(len(dataloader.dataset))
+        preds = np.empty(len(dataloader.dataset))
         k = 0
         with torch.no_grad():
             self.netmodel.eval()
@@ -127,7 +135,7 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
     def embed(self, X):
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 1, 'pin_memory': True}
+        kwargs = {'num_workers': 2, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
         return extract_embeddings(dataloader, self.embedding_net, use_cuda=True, with_labels=False)
 
@@ -166,9 +174,9 @@ class EmbeddingWrapper:
                 # fpath = "%s/%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
                 #                                   X.shape[0], X.shape[1], sum(y), self.num_outputs)
                 fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                                              X.shape[0], X.shape[1], sum(
-                                                                  y), self.num_outputs,
-                                                              1e+6 * learning_rate, num_subepochs, batch_size)
+                                                           X.shape[0], X.shape[1], sum(
+                                                               y), self.num_outputs,
+                                                           1e+6 * learning_rate, num_subepochs, batch_size)
             model_loaded = _loadTorchModel(fpath, self.embedding_net)
             if(not model_loaded):
                 print('"%s" not found or not a torch model' % fpath)
@@ -208,7 +216,7 @@ class EmbeddingWrapper:
     def embed(self, X):
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 1, 'pin_memory': True}
+        kwargs = {'num_workers': 2, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
         return extract_embeddings(dataloader, self.embedding_net, use_cuda=True, with_labels=False)
 
@@ -260,7 +268,8 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         X, y = check_X_y(X, y)
         X1, X2 = self._splitfeatures(X)
         # self.classes_ = unique_labels(y)
-        self.embedding_net_wrapper.train(X2, y, self.learning_rate, self.num_subepochs, self.batch_size)
+        self.embedding_net_wrapper.train(X2, y, self.learning_rate,
+                                         self.num_subepochs, self.batch_size)
         newX = self.embedding_net_wrapper.embed(X2)
         newX = np.concatenate((X1, newX), axis=1)
         # pairplot_embeddings(newX, y)
@@ -286,9 +295,13 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
 
 
 class ClassifierConvNet2(ClassifierConvNet):
-    def __init__(self, nclasses: int, base_classif, base_dir=None):
+    def __init__(self, nclasses: int, base_classif, base_dir=None,
+                 learning_rate=1e-3, num_steps_decay=35, batch_size=500):
         super().__init__(nclasses, base_dir)
         self.augclassif = AugmentedClassifier(base_classif)
+        self.learning_rate = learning_rate
+        self.num_steps_decay = num_steps_decay
+        self.batch_size = batch_size
 
     def fit(self, X, y):
         super().fit(X, y)
@@ -302,7 +315,11 @@ class ClassifierConvNet2(ClassifierConvNet):
     def get_params(self, deep=True):
         return {'nclasses': self.nclasses,
                 'base_classif': self.augclassif.base_classif,
-                'base_dir': self.base_dir}
+                'base_dir': self.base_dir,
+                "learning_rate": self.learning_rate,
+                "num_steps_decay": self.num_steps_decay,
+                "batch_size": self.batch_size
+                }
 
     def set_params(self, **parameters):
         for parameter, value in parameters.items():
@@ -314,4 +331,10 @@ class ClassifierConvNet2(ClassifierConvNet):
                 self.augclassif.embedding_net_wrapper = EmbeddingWrapper(value)
             if(parameter == 'base_classif'):
                 self.augclassif.base_classif = value
+            elif(parameter == 'learning_rate'):
+                self.learning_rate = value
+            elif(parameter == 'num_subepochs'):
+                self.num_subepochs = value
+            elif(parameter == 'batch_size'):
+                self.batch_size = value
         return self
