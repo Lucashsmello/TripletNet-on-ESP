@@ -1,4 +1,4 @@
-# Metric Learning for Electrical Submersible PumpFault Diagnosis
+# Metric Learning for Electrical Submersible Pump Fault Diagnosis
 
 Triplet network applied to fault diagnosis of Eletrical Submersible Pumps.
 
