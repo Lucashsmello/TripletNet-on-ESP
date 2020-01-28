@@ -1,5 +1,6 @@
-# TripletNet-on-BCS
-Deep Triplet network applied to fault diagnosis of Eletrical Submersible Pumps.
+# Metric Learning for Electrical Submersible PumpFault Diagnosis
+
+Triplet network applied to fault diagnosis of Eletrical Submersible Pumps.
 
 Research done by the computer lab [NINFA](http://ninfa.inf.ufes.br/site/en), situated at the Federal University of Espírito Santo, Brazil.
 
