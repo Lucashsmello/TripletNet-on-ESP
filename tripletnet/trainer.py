@@ -4,10 +4,11 @@ from siamese_triplet.networks import ClassificationNet
 from siamese_triplet.metrics import AverageNonzeroTripletsMetric, AccumulatedAccuracyMetric
 from siamese_triplet.losses import OnlineTripletLoss
 from siamese_triplet.datasets import BalancedBatchSampler
-import siamese_triplet.trainer
+from siamese_triplet import trainer
 
 
-def train_classifier(train_loader, test_loader, embedding_net, lr, num_steps_decay=35, n_epochs=15, use_cuda=True):
+
+def train_classifier(train_loader, test_loader, embedding_net, lr, num_steps_decay=15, n_epochs=15, use_cuda=True):
     nclasses = len(train_loader.dataset.targets.unique())
     if(use_cuda):
         embedding_net.cuda()
@@ -16,10 +17,10 @@ def train_classifier(train_loader, test_loader, embedding_net, lr, num_steps_dec
         model.cuda()
     # loss_fn = torch.nn.NLLLoss()
     loss_fn = torch.nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.fc1.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, num_steps_decay, gamma=0.9, last_epoch=-1)
     log_interval = 50000
-    siamese_triplet.trainer.fit(train_loader, test_loader, model, loss_fn,
+    trainer.fit(train_loader, test_loader, model, loss_fn,
                                 optimizer, scheduler, n_epochs, use_cuda, log_interval,
                                 metrics=[AccumulatedAccuracyMetric()])
     return model
@@ -54,8 +55,9 @@ def train_tripletNetworkAdvanced(data_train, triplet_test_loader, model,
                 triplet_sel = strat['triplet-selector'](margin)
             loss_fn = OnlineTripletLoss(margin, triplet_sel)
             optimizer = optim.Adam(model.parameters(), lr=lr)
-            scheduler = optim.lr_scheduler.StepLR(optimizer, 20, gamma=0.9, last_epoch=-1)
-            siamese_triplet.trainer.fit(triplet_train_loader, triplet_test_loader, model, loss_fn,
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer, n_epochs//2+1, gamma=0.9, last_epoch=-1)
+            trainer.fit(triplet_train_loader, triplet_test_loader, model, loss_fn,
                                         optimizer, scheduler, n_epochs, use_cuda, log_interval,
                                         metrics=[AverageNonzeroTripletsMetric()])
 
@@ -77,43 +79,7 @@ def train_tripletNetwork(triplet_train_loader, triplet_test_loader, model, tripl
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, 8, gamma=0.1, last_epoch=-1)
     log_interval = 2000
-    siamese_triplet.trainer.fit(triplet_train_loader, triplet_test_loader, model, loss_fn,
+    trainer.fit(triplet_train_loader, triplet_test_loader, model, loss_fn,
                                 optimizer, scheduler, n_epochs, use_cuda, log_interval,
                                 metrics=[AverageNonzeroTripletsMetric()])
     return model
-
-
-def main(save_file):
-    from rpdbcs.datahandler.dataset import readDataset
-    from sklearn.model_selection import StratifiedShuffleSplit
-    from classifiers.augmented_classifier import EmbeddingWrapper, ClassifierConvNet
-
-    data_dir = 'data/data_classified_v6'
-    D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
-                    remove_first=100, nsigs=33000, npoints=10800)
-    D.normalize(f_hz="min")
-    D.shuffle()
-    Feats = D.asMatrix()[:, :6100]
-    targets, _ = D.getMulticlassTargets()
-    n = int(len(targets) * 0.8)
-    Xtrain = Feats[:n]
-    Ytrain = targets[:n]
-    # sampler = StratifiedShuffleSplit(1, test_size=0.2, random_state=123)
-    # for train_index, _ in sampler.split(Feats, targets):
-    #     Xtrain = Feats[train_index]
-    #     Ytrain = targets[train_index]
-    #     break
-    net = ClassifierConvNet(5)
-    net.fit(Xtrain, Ytrain)
-    # net = EmbeddingWrapper(None, 8)
-    # net.train(Xtrain, Ytrain)
-    net.save(save_file)
-
-
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--outfile', type=str, required=True)
-    args = parser.parse_args()
-
-    main(args.outfile)

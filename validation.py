@@ -11,8 +11,8 @@ from sklearn.decomposition import PCA
 from pandas import DataFrame
 import numpy
 from sklearn.pipeline import Pipeline
-from feature_selector import ManualFeaturesSelector
-from classifiers.augmented_classifier import AugmentedClassifier, ClassifierConvNet, ClassifierConvNet2, RESET_FOLD_ID
+from tripletnet.feature_selector import ManualFeaturesSelector
+from tripletnet.classifiers.augmented_classifier import AugmentedClassifier, ClassifierConvNet, ClassifierConvNet2, RESET_FOLD_ID
 from sklearn.metrics import make_scorer
 import time
 import warnings
@@ -120,34 +120,37 @@ def getDeepClassifiers(num_predefined_feats):
     clfs = []
     # clfs.append((ClassifierConvNet(base_dir="saved_models/ClassifierConvNet", nclasses=5), "ConvNet"))
     baseclfs_std = getBaseClassifiers(('scale', StandardScaler()))
-    # baseclfs = getBaseClassifiers()
-    # for c, cname in baseclfs:
-    #     augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net")
-    #     augclf = GridSearchCV(augclf, {
-    #         'learning_rate': [1e-4, 1e-3, 1e-2],
-    #         'num_subepochs': [20, 30, 40],
-    #         'batch_size': [4, 8, 16]
-    #     }, scoring=scorer, cv=sampler)
-    #     clfs.append((augclf, "Aug-%s" % cname))
-
-    for c, cname in baseclfs_std:
-        augclf2 = ClassifierConvNet2(
-            base_dir="saved_models/ClassifierConvNet", nclasses=5, base_classif=c)
-        augclf2 = GridSearchCV(augclf2, {
+    baseclfs = getBaseClassifiers()
+    for c, cname in baseclfs:
+        augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net")
+        augclf = GridSearchCV(augclf, {
             'learning_rate': [1e-4, 1e-3, 1e-2],
-            'num_steps_decay': [20, 30, 40],
-            'batch_size': [128, 256, 512]
+            'num_subepochs': [20, 30, 40],
+            'batch_size': [4, 8, 16]
         }, scoring=scorer, cv=sampler)
-        clfs.append((augclf2, "ConvNet-%s" % cname))
+        clfs.append((augclf, "Aug-%s" % cname))
+
+    # for c, cname in baseclfs_std:
+    #     augclf2 = ClassifierConvNet2(
+    #         base_dir="saved_models/ClassifierConvNet", nclasses=5, base_classif=c)
+    #     augclf2 = GridSearchCV(augclf2, {
+    #         'learning_rate': [1e-4, 1e-3, 1e-2],
+    #         'num_steps_decay': [20, 30, 40],
+    #         'batch_size': [128, 256, 512]
+    #     }, scoring=scorer, cv=sampler)
+    #     clfs.append((augclf2, "ConvNet-%s" % cname))
     return clfs
 
 
 D = readDataset('data/data_classified_v6/freq.csv', 'data/data_classified_v6/labels.csv',
                 remove_first=100, nsigs=20000, npoints=10800)
-# T, _ = D.getMulticlassTargets()
-# D.remove((T[T == 0].index).values)
+targets, _ = D.getMulticlassTargets()
+D.remove((targets[targets == 0].index).values)
 D.normalize(f_hz="min")
 # D.shuffle()
+targets, targets_name = D.getMulticlassTargets()
+print(targets_name)
+
 
 rpdbcs2feats_names = getRPDBCS2FeaturesNames()
 ictaifeats_names = getICTAI2016FeaturesNames()
@@ -174,7 +177,6 @@ clfs += deep_clfs
 clfs += getClassifiers(getBaseClassifiers(), ictaifeats_sel, use_normalization=True)
 
 
-targets, targets_name = D.getMulticlassTargets()
 # metrics = {"F-%d" % i: make_scorer(f1_score, labels=[i], average='macro') for i in range(5)}
 """
 Valid Options:
@@ -184,20 +186,11 @@ Valid Options:
 metrics = ['precision_macro', 'recall_macro', 'f1_macro',
            'f1_micro', 'accuracy']
 metrics = {m: m for m in metrics}
-# metrics['roc_auc_macro'] = make_scorer(
-#     sklearn.metrics.roc_auc_score, average="macro", needs_proba=True, multi_class="ovo")
-# metrics = {'f1_macro': f1_score,
-#            'precision_macro': precision_score,
-#            'recall_macro': recall_score}
-# metrics = {'f1_macro': make_scorer(f1_score, average='macro'),
-#            'precision_macro': make_scorer(precision_score, average='macro'),
-#            'recall_macro': make_scorer(recall_score, average='macro'),
-#            'accuracy': make_scorer(accuracy_score)}
 results_test = {m: [] for m in metrics}
 results_test_folds = {"f1_macro": [], "clf_name": []}
 results_train = {m: [] for m in metrics}
 results_test_std = {m: [] for m in metrics}
-y_diff = {}
+# y_diff = {}
 
 sampler = StratifiedKFold(10, shuffle=False)
 for clf, name in clfs:
@@ -207,10 +200,6 @@ for clf, name in clfs:
                             cv=sampler, return_train_score=True, return_estimator=False)
     t2 = time.time()
     print("----------%s-----------(%.2fseconds)" % (name, t2-t1))
-    # for m in metrics:
-    #     results_test[m].append(scores["test_%s" % m].mean())
-    #     results_train[m].append(scores["train_%s" % m].mean())
-    #     results_test_std[m].append(scores["test_%s" % m].std())
 
     for m in metrics:
         results_test[m].append(scores["test_%s" % m].mean())
@@ -250,5 +239,3 @@ df_preds = DataFrame(y_diff)
 df_preds['Signal id'] = D.asDataFrame()['Signal id']
 df_preds.to_csv('results/predictions.csv', sep=';')
 '''
-# Y = D.getMulticlassTargets()
-#{Y[1][l]:np.bincount(Y[0])[l] for l in Y[1]}

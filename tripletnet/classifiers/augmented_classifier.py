@@ -2,18 +2,13 @@ import torch
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array
 from sklearn.utils.multiclass import unique_labels
-from datahandler import BasicTorchDataset
-# from siamese_triplet.datasets import BalancedBatchSampler
+from ..datahandler import BasicTorchDataset
 from siamese_triplet.networks import ClassificationNet
 from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
-from trainer import train_tripletNetworkAdvanced, train_classifier
-from networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, BrunaEmbeddingNet
+from ..trainer import train_tripletNetworkAdvanced, train_classifier
+from ..networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, BrunaEmbeddingNet
 import numpy as np
 import os
-
-from visualization import pairplot_embeddings  # REMOVEME
-#from samplers import StratifiedSampler
-
 
 FOLD_ID = 0
 
@@ -47,7 +42,7 @@ def INCREMENT_FOLD_ID():
 
 def _loadTorchModel(fpath, rawmodel):
     if(os.path.exists(fpath)):
-        print('Loading model "%s"' % fpath)
+        #print('Loading model "%s"' % fpath)
         checkpoint = torch.load(fpath)
         rawmodel.load_state_dict(checkpoint['state_dict'])
         rawmodel.cuda()
@@ -56,24 +51,47 @@ def _loadTorchModel(fpath, rawmodel):
 
 
 class ClassifierConvNet(BaseEstimator, ClassifierMixin):
-    def __init__(self, nclasses: int, base_dir=None):
+    def __init__(self, nclasses: int, base_dir=None, encoder_net=None):
         self.base_dir = base_dir
         self.nclasses = nclasses
-        self.num_outputs = 8
+        if(encoder_net is None):
+            self.num_outputs = 8
+        else:
+            for last_module in encoder_net.modules():
+                pass
+            self.num_outputs = last_module.out_features
         self.model_loaded = False
-        self.learning_rate = 1e-3
+        self.learning_rate = 1e-2
         self.batch_size = 500
-        self.num_steps_decay = 20
+        self.num_steps_decay = 15
+        self.embedding_net = encoder_net
 
     def load(self, fpath):
+        """
+        DEPRECATED
+        """
         self.embedding_net = lmelloEmbeddingNet(self.num_outputs)
         self.netmodel = ClassificationNet(self.embedding_net, n_classes=self.nclasses)
         self.model_loaded = _loadTorchModel(fpath, self.netmodel)
         if(not self.model_loaded):
             print('"%s" not found or not a torch model' % fpath)
 
+    @staticmethod
+    def loadModel(fpath: str) -> 'ClassifierConvNet':
+        checkpoint = torch.load(fpath)
+        num_outputs = checkpoint['num_outputs']
+        encoder_net = lmelloEmbeddingNet2(num_outputs)
+        convnet = ClassifierConvNet(nclasses=5, encoder_net=encoder_net)
+        convnet.netmodel = ClassificationNet(encoder_net, n_classes=5)
+        convnet.netmodel.load_state_dict(checkpoint['state_dict'])
+        convnet.netmodel.cuda()
+
+        return convnet
+
     def save(self, fpath):
-        torch.save({'state_dict': self.netmodel.state_dict()}, fpath)
+        data_to_save = {'state_dict': self.netmodel.state_dict(),
+                        'num_outputs': self.num_outputs}
+        torch.save(data_to_save, fpath)
 
     def fit(self, X, y):
         global FOLD_ID
@@ -87,18 +105,19 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
         # self.scaler = fitScaler(X)
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, y)
-        self.embedding_net = lmelloEmbeddingNet(num_outputs=self.num_outputs)
-        if(self.base_dir is not None):
-            if(self.base_dir[-3:] == '.pt' or self.base_dir[-4:] == '.pth'):
-                fpath = self.base_dir
-            else:
-                fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                                           X.shape[0], X.shape[1], sum(
-                                                               y), self.num_outputs,
-                                                           1e+6 * self.learning_rate, self.num_steps_decay, self.batch_size)
-            self.netmodel = ClassificationNet(self.embedding_net, n_classes=self.nclasses)
+        if(self.embedding_net is None):
+            self.embedding_net = lmelloEmbeddingNet(num_outputs=self.num_outputs)
+            if(self.base_dir is not None):
+                if(self.base_dir[-3:] == '.pt' or self.base_dir[-4:] == '.pth'):
+                    fpath = self.base_dir
+                else:
+                    fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
+                                                               X.shape[0], X.shape[1], sum(
+                                                                   y), self.num_outputs,
+                                                               1e+6 * self.learning_rate, self.num_steps_decay, self.batch_size)
+                self.netmodel = ClassificationNet(self.embedding_net, n_classes=self.nclasses)
 
-            self.model_loaded = _loadTorchModel(fpath, self.netmodel)
+                self.model_loaded = _loadTorchModel(fpath, self.netmodel)
 
         if(not self.model_loaded):
             class_sample_count = np.bincount(y)
@@ -142,29 +161,39 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
 
 class EmbeddingWrapper:
     def __init__(self, base_dir=None, num_outputs=8):
-        self.fold_number = 1
         self.base_dir = base_dir
         self.num_outputs = num_outputs
         self.model_loaded = False
 
     def load(self, fpath):
-        self.embedding_net = lmelloEmbeddingNet(self.num_outputs, num_knownfeats=0)
+        self.embedding_net = lmelloEmbeddingNet2(self.num_outputs)
         self.model_loaded = _loadTorchModel(fpath, self.embedding_net)
         if(not self.model_loaded):
             print('"%s" not found or not a torch model' % fpath)
 
-    def save(self, fpath):
-        torch.save({'state_dict': self.embedding_net.state_dict()}, fpath)
+    @staticmethod
+    def loadModel(fpath: str) -> 'EmbeddingWrapper':
+        checkpoint = torch.load(fpath)
+        num_outputs = checkpoint['num_outputs']
+        model = EmbeddingWrapper(num_outputs=num_outputs)
+        model.embedding_net = lmelloEmbeddingNet2(num_outputs)
+        model.embedding_net.load_state_dict(checkpoint['state_dict'])
+        model.embedding_net.cuda()
+        return model
 
-    def train(self, X, y, learning_rate, num_subepochs, batch_size):
+    def save(self, fpath):
+        data_to_save = {'state_dict': self.embedding_net.state_dict(),
+                        'num_outputs': self.num_outputs}
+        torch.save(data_to_save, fpath)
+
+    def train(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16):
         if(self.model_loaded):
             return
         global FOLD_ID
         FOLD_ID += 1
         # self.scaler = fitScaler(X)
 
-        self.embedding_net = lmelloEmbeddingNet(self.num_outputs, num_knownfeats=0)
-        # self.embedding_net = BrunaEmbeddingNet(self.num_outputs, num_knownfeats=0)
+        self.embedding_net = lmelloEmbeddingNet2(self.num_outputs)
         model_loaded = False
 
         if(self.base_dir is not None):
@@ -174,8 +203,8 @@ class EmbeddingWrapper:
                 # fpath = "%s/%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
                 #                                   X.shape[0], X.shape[1], sum(y), self.num_outputs)
                 fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                                           X.shape[0], X.shape[1], sum(
-                                                               y), self.num_outputs,
+                                                           X.shape[0], X.shape[1],
+                                                           sum(y), self.num_outputs,
                                                            1e+6 * learning_rate, num_subepochs, batch_size)
             model_loaded = _loadTorchModel(fpath, self.embedding_net)
             if(not model_loaded):
@@ -209,7 +238,7 @@ class EmbeddingWrapper:
             ]
             self.embedding_net = train_tripletNetworkAdvanced(
                 D, None, self.embedding_net, triplet_train_config,
-                gamma=0.1, beta=0.25, niterations=16, batch_size=batch_size)
+                gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size)
             if(self.base_dir is not None):
                 self.save(fpath)
 

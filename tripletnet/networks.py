@@ -43,11 +43,13 @@ class BrunaEmbeddingNet(nn.Module):
 
 
 class lmelloEmbeddingNet(nn.Module):
-    def __init__(self, num_outputs, num_knownfeats=0):
+    def __init__(self, num_outputs, num_inputs_channels=1, num_knownfeats=0):
         super(lmelloEmbeddingNet, self).__init__()
         self.num_knownfeats = num_knownfeats
+        self.num_outputs = num_outputs
         self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
+            nn.Conv1d(num_inputs_channels, 16, 5), nn.LeakyReLU(
+                negative_slope=0.05), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4),
             nn.Conv1d(16, 32, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4),
@@ -57,9 +59,6 @@ class lmelloEmbeddingNet(nn.Module):
 
         self.fc = nn.Sequential(nn.Linear(64 * 94+num_knownfeats, 192),
                                 nn.LeakyReLU(negative_slope=0.05),
-                                # nn.Linear(128, 64),
-                                # nn.PReLU(),
-                                # nn.Dropout(p=0.1),
                                 nn.Linear(192, num_outputs)
                                 )
 
@@ -79,26 +78,54 @@ class lmelloEmbeddingNet(nn.Module):
     def get_embedding(self, x):
         return self.forward(x)
 
+    def encode(self, x):
+        with torch.no_grad():
+            if(len(x.shape) == 1):
+                n = 1
+                x = torch.tensor(x[:6100], dtype=torch.float32).cuda()
+                x = x.reshape((1, 1, 6100))
+                return self.forward(x).squeeze()
+            else:
+                n = x.shape[0]
+                ret = torch.empty((n, self.num_outputs), dtype=torch.float32).cuda()
+                k = 0
+                for i in range(0, n, 8):
+                    batch = torch.tensor(x[i:i+8, :6100], dtype=torch.float32).cuda()
+                    batch = batch.reshape(batch.shape[0], 1, 6100)
+                    output = self.forward(batch).squeeze()
+                    ret[k:k+len(output)] = output
+                    k += len(output)
+                return ret
+
+            # if(next(self.parameters()).is_cuda):
+            #     x = x.cuda()
+
 
 class lmelloEmbeddingNet2(lmelloEmbeddingNet):
-    def __init__(self, num_outputs=2, num_knownfeats=0):
-        super(lmelloEmbeddingNet, self).__init__()
-        self.num_knownfeats = num_knownfeats
+    def __init__(self, num_outputs, num_inputs_channels=1):
+        super().__init__(num_outputs, num_inputs_channels)
         self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.PReLU(),
+            nn.Conv1d(num_inputs_channels, 16, 5), nn.ReLU(), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.PReLU(),
+            nn.Conv1d(16, 32, 5), nn.ReLU(), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 5), nn.PReLU(),
+            nn.Conv1d(32, 64, 5), nn.ReLU(), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4)
         )
 
-        self.fc = nn.Sequential(nn.Linear(64 * 94+num_knownfeats, 192),
-                                nn.PReLU(),
-                                nn.Linear(192, 64),
-                                nn.PReLU(),
-                                nn.Linear(64, num_outputs)
+        self.fc = nn.Sequential(nn.Linear(64 * 94, 192),
+                                nn.ReLU(),
+                                nn.Linear(192, num_outputs)
                                 )
+
+    def forward(self, x):
+        output = self.convnet(x)
+        output = output.view(output.size()[0], -1)
+        output = self.fc(output)
+        return output
+
+    def get_embedding(self, x):
+        return self.forward(x)
 
 
 def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_labels=True):
@@ -123,3 +150,9 @@ def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_la
         return embeddings, labels
     return embeddings
 ########################
+
+# from torchsummary import summary
+
+# net=lmelloEmbeddingNet(8)
+# net.cuda()
+# summary(net, input_size=(1, 6100))
