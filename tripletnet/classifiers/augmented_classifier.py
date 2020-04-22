@@ -140,7 +140,7 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
         D = BasicTorchDataset(X, None)
         kwargs = {'num_workers': 2, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
-        preds = np.empty(len(dataloader.dataset))
+        preds = np.empty(len(dataloader.dataset), dtype=np.int)
         k = 0
         with torch.no_grad():
             self.netmodel.eval()
@@ -187,6 +187,20 @@ class EmbeddingWrapper:
         torch.save(data_to_save, fpath)
 
     def train(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16):
+        D = BasicTorchDataset(X, y)
+        margin1 = 1.0
+        triplet_train_config = [
+            {'triplet-selector': RandomNegativeTripletSelector,
+             'learning-rate': learning_rate,
+             'margin': margin1,
+             'nepochs': num_subepochs
+             }
+        ]
+        self.embedding_net = train_tripletNetworkAdvanced(
+            D, None, self.embedding_net, triplet_train_config,
+            gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size)
+
+    def _train_cached(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16):
         if(self.model_loaded):
             return
         global FOLD_ID
@@ -211,38 +225,21 @@ class EmbeddingWrapper:
                 print('"%s" not found or not a torch model' % fpath)
 
         if(not model_loaded):
-            # X = self.scaler.transform(X)
             print("Training new model")
-            D = BasicTorchDataset(X, y)
-            # batch_sampler = BalancedBatchSampler(D.targets, n_classes=len(set(y)), n_samples=8)
-            # kwargs = {'num_workers': 1, 'pin_memory': True}
-            # dataloader = torch.utils.data.DataLoader(D, batch_sampler=batch_sampler, **kwargs)
-            margin1 = 1.0
-            triplet_train_config = [
-                # {'triplet-selector': SemihardNegativeTripletSelector,
-                #  'learning-rate': 5e-4,
-                #  'margin': margin1,
-                #  'hard_factor': 1,
-                #  'nepochs': 6
-                #  },
-                # {'triplet-selector': HardNegativeTripletSelector,
-                #  'learning-rate': 5e-4,
-                #  'margin': margin1+0.001,
-                #  'nepochs': 6
-                #  }
-                {'triplet-selector': RandomNegativeTripletSelector,
-                 'learning-rate': learning_rate,
-                 'margin': margin1,
-                 'nepochs': num_subepochs
-                 }
-            ]
-            self.embedding_net = train_tripletNetworkAdvanced(
-                D, None, self.embedding_net, triplet_train_config,
-                gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size)
+            self.train(X, y, learning_rate, num_subepochs, batch_size, niterations=niterations)
             if(self.base_dir is not None):
                 self.save(fpath)
 
     def embed(self, X):
+        """
+        Transform features from the original to the triplet-space.
+
+        Args:
+            X (Matrix): Vector fo amplitudes.
+
+        Returns:
+            The encodding in an matrix of len(X) lines and self.num_outputs columns.
+        """
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
         kwargs = {'num_workers': 2, 'pin_memory': True}
@@ -297,7 +294,7 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         X, y = check_X_y(X, y)
         X1, X2 = self._splitfeatures(X)
         # self.classes_ = unique_labels(y)
-        self.embedding_net_wrapper.train(X2, y, self.learning_rate,
+        self.embedding_net_wrapper._train_cached(X2, y, self.learning_rate,
                                          self.num_subepochs, self.batch_size)
         newX = self.embedding_net_wrapper.embed(X2)
         newX = np.concatenate((X1, newX), axis=1)

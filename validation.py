@@ -80,7 +80,7 @@ def getBaseClassifiers(pre_pipeline=None):
                        },
                        scoring=scorer, cv=sampler, n_jobs=6)
 
-    clfs.append((svm, "SVM"))
+    # clfs.append((svm, "SVM"))
     clfs.append((knn, "knn"))
     clfs.append((dtree, "DT"))
     clfs.append((rf, "RF"))
@@ -122,12 +122,12 @@ def getDeepClassifiers(num_predefined_feats):
     baseclfs_std = getBaseClassifiers(('scale', StandardScaler()))
     baseclfs = getBaseClassifiers()
     for c, cname in baseclfs:
-        augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net")
-        augclf = GridSearchCV(augclf, {
-            'learning_rate': [1e-4, 1e-3, 1e-2],
-            'num_subepochs': [20, 30, 40],
-            'batch_size': [4, 8, 16]
-        }, scoring=scorer, cv=sampler)
+        augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net", num_subepochs=10, batch_size=4)
+        # augclf = GridSearchCV(augclf, {
+        #     'learning_rate': [1e-4, 1e-3, 1e-2],
+        #     'num_subepochs': [20, 30, 40],
+        #     'batch_size': [4, 8, 16]
+        # }, scoring=scorer, cv=sampler)
         clfs.append((augclf, "Aug-%s" % cname))
 
     # for c, cname in baseclfs_std:
@@ -142,7 +142,8 @@ def getDeepClassifiers(num_predefined_feats):
     return clfs
 
 
-D = readDataset('data/data_classified_v6/freq.csv', 'data/data_classified_v6/labels.csv',
+ROOT_DIR = '/home/lhsmello/ufes/NINFA/lmello_RPDBCS3/data'
+D = readDataset(ROOT_DIR+'/data_classified_v6/freq.csv', ROOT_DIR+'/data_classified_v6/labels.csv',
                 remove_first=100, nsigs=20000, npoints=10800)
 targets, _ = D.getMulticlassTargets()
 D.remove((targets[targets == 0].index).values)
