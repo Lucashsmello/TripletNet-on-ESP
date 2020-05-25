@@ -9,6 +9,28 @@ def initWeights(m):
         m.bias.data.fill_(0.01)
 
 
+class EmbeddingNetMNIST(nn.Module):
+    def __init__(self, num_outputs):
+        super().__init__()
+        # input: (1,28,28)
+        self.convnet = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.Dropout2d(0.2),
+            nn.MaxPool2d(2, stride=2),
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU()
+        )
+
+        self.fc = nn.Sequential(nn.Linear(32*14*14, 512), nn.ReLU(), nn.Dropout(0.2),
+                                nn.Linear(512, num_outputs)
+                                )
+
+    def forward(self, x):
+        x = self.convnet(x)
+        x = x.view(x.size()[0], -1)
+        x = self.fc(x)
+
+        return x
+
+
 class BrunaEmbeddingNet(nn.Module):
     def __init__(self, num_outputs=2, num_knownfeats=0):
         super(BrunaEmbeddingNet, self).__init__()
@@ -142,7 +164,7 @@ def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_la
         for samples, target in dataloader:
             if use_cuda:
                 samples = samples.cuda()
-            embeddings[k:k+len(samples)] = model.get_embedding(samples).data.cpu().numpy()
+            embeddings[k:k+len(samples)] = model.forward(samples).data.cpu().numpy()
             if(with_labels):
                 labels[k:k+len(samples)] = target.numpy()
             k += len(samples)

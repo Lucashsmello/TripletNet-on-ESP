@@ -1,4 +1,6 @@
 import torch
+from torch import nn
+import torch.nn.functional as F
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array
 from sklearn.utils.multiclass import unique_labels
@@ -9,6 +11,7 @@ from ..trainer import train_tripletNetworkAdvanced, train_classifier
 from ..networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, BrunaEmbeddingNet
 import numpy as np
 import os
+from siamese_triplet.losses import OnlineTripletLoss
 
 FOLD_ID = 0
 
@@ -138,7 +141,7 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 2, 'pin_memory': True}
+        kwargs = {'num_workers': 3, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
         preds = np.empty(len(dataloader.dataset), dtype=np.int)
         k = 0
@@ -154,40 +157,40 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
     def embed(self, X):
         # X = self.scaler.transform(X)
         D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 2, 'pin_memory': True}
+        kwargs = {'num_workers': 3, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
         return extract_embeddings(dataloader, self.embedding_net, use_cuda=True, with_labels=False)
 
 
 class EmbeddingWrapper:
-    def __init__(self, base_dir=None, num_outputs=8):
+    def __init__(self, base_dir=None, num_outputs=8, net_arch=lmelloEmbeddingNet2):
         self.base_dir = base_dir
         self.num_outputs = num_outputs
         self.model_loaded = False
-
-    def load(self, fpath):
-        self.embedding_net = lmelloEmbeddingNet2(self.num_outputs)
-        self.model_loaded = _loadTorchModel(fpath, self.embedding_net)
-        if(not self.model_loaded):
-            print('"%s" not found or not a torch model' % fpath)
+        self.embedding_net = net_arch(num_outputs)
 
     @staticmethod
-    def loadModel(fpath: str) -> 'EmbeddingWrapper':
+    def loadModel(fpath: str, net_arch=lmelloEmbeddingNet2) -> 'EmbeddingWrapper':
         checkpoint = torch.load(fpath)
         num_outputs = checkpoint['num_outputs']
-        model = EmbeddingWrapper(num_outputs=num_outputs)
-        model.embedding_net = lmelloEmbeddingNet2(num_outputs)
+        if('net_arch_name' in checkpoint):
+            msg = "Network arch in %s is incompatible with %s. Try using parameter 'net_arch' from %s.loadModel() properly."
+            msg = msg % (fpath, net_arch.__name__, EmbeddingWrapper.__name__)
+            assert(checkpoint['net_arch_name'] == net_arch.__name__), msg
+        model = EmbeddingWrapper(num_outputs=num_outputs, net_arch=net_arch)
         model.embedding_net.load_state_dict(checkpoint['state_dict'])
         model.embedding_net.cuda()
         return model
 
     def save(self, fpath):
         data_to_save = {'state_dict': self.embedding_net.state_dict(),
-                        'num_outputs': self.num_outputs}
+                        'num_outputs': self.num_outputs,
+                        'net_arch_name': self.embedding_net.__class__.__name__}
         torch.save(data_to_save, fpath)
 
-    def train(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16):
-        D = BasicTorchDataset(X, y)
+    def train(self, D, learning_rate, num_subepochs, batch_size, niterations=16, loss_function_generator=OnlineTripletLoss):
+        if(not isinstance(D, torch.utils.data.Dataset)):
+            D = BasicTorchDataset(D[0], D[1])
         margin1 = 1.0
         triplet_train_config = [
             {'triplet-selector': RandomNegativeTripletSelector,
@@ -198,9 +201,10 @@ class EmbeddingWrapper:
         ]
         self.embedding_net = train_tripletNetworkAdvanced(
             D, None, self.embedding_net, triplet_train_config,
-            gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size)
+            gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size,
+            loss_function_generator=loss_function_generator)
 
-    def _train_cached(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16):
+    def _train_cached(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16, loss_function_generator=OnlineTripletLoss):
         if(self.model_loaded):
             return
         global FOLD_ID
@@ -226,7 +230,8 @@ class EmbeddingWrapper:
 
         if(not model_loaded):
             print("Training new model")
-            self.train(X, y, learning_rate, num_subepochs, batch_size, niterations=niterations)
+            self.train(X, y, learning_rate, num_subepochs, batch_size,
+                       niterations=niterations, loss_function_generator=loss_function_generator)
             if(self.base_dir is not None):
                 self.save(fpath)
 
@@ -235,14 +240,17 @@ class EmbeddingWrapper:
         Transform features from the original to the triplet-space.
 
         Args:
-            X (Matrix): Vector fo amplitudes.
+            X (Matrix): Matrix of amplitudes.
 
         Returns:
             The encodding in an matrix of len(X) lines and self.num_outputs columns.
         """
         # X = self.scaler.transform(X)
-        D = BasicTorchDataset(X, None)
-        kwargs = {'num_workers': 2, 'pin_memory': True}
+        if(not isinstance(X, torch.utils.data.Dataset)):
+            D = BasicTorchDataset(X, None)
+        else:
+            D = X
+        kwargs = {'num_workers': 3, 'pin_memory': True}
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
         return extract_embeddings(dataloader, self.embedding_net, use_cuda=True, with_labels=False)
 
@@ -291,13 +299,13 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         return X1, X2
 
     def fit(self, X, y):
-        X, y = check_X_y(X, y)
-        X1, X2 = self._splitfeatures(X)
+        # X, y = check_X_y(X, y)
+        # X1, X2 = self._splitfeatures(X)
         # self.classes_ = unique_labels(y)
-        self.embedding_net_wrapper._train_cached(X2, y, self.learning_rate,
-                                         self.num_subepochs, self.batch_size)
-        newX = self.embedding_net_wrapper.embed(X2)
-        newX = np.concatenate((X1, newX), axis=1)
+        self.embedding_net_wrapper._train_cached(X, y, self.learning_rate,
+                                                 self.num_subepochs, self.batch_size)
+        newX = self.embedding_net_wrapper.embed(X)
+        # newX = np.concatenate((X1, newX), axis=1)
         # pairplot_embeddings(newX, y)
         self.base_classif.fit(newX, y)
         return self
