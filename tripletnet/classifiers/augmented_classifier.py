@@ -262,8 +262,9 @@ class EmbeddingWrapper:
 class AugmentedClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, base_classif, savedir=None,
                  learning_rate=1e-3, num_subepochs=35, num_epochs=16, batch_size=16,
-                 custom_trainepoch=train_epoch, net_arch=lmelloEmbeddingNet):
-        self.embedding_net_wrapper = EmbeddingWrapper(savedir, num_outputs=8, net_arch=lmelloEmbeddingNet)
+                 custom_trainepoch=train_epoch, net_arch=lmelloEmbeddingNet, num_outputs=8):
+        self.net_arch = net_arch
+        self.embedding_net_wrapper = None
         self.base_classif = base_classif
         self.savedir = savedir
         self.learning_rate = learning_rate
@@ -271,13 +272,18 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         self.num_epochs = num_epochs
         self.batch_size = batch_size
         self.custom_trainepoch = custom_trainepoch
+        self.num_outputs = num_outputs
 
     def get_params(self, deep=True):
         return {"base_classif": self.base_classif,
                 "savedir": self.savedir,
                 "learning_rate": self.learning_rate,
                 "num_subepochs": self.num_subepochs,
-                "batch_size": self.batch_size
+                "batch_size": self.batch_size,
+                "num_epochs": self.num_epochs,
+                "custom_trainepoch": self.custom_trainepoch,
+                "net_arch": self.net_arch,
+                "num_outputs": self.num_outputs
                 }
 
     def set_params(self, **parameters):
@@ -285,7 +291,8 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
             # setattr(self, parameter, value)
             if(parameter == 'savedir'):
                 self.savedir = value
-                self.embedding_net_wrapper = EmbeddingWrapper(value)
+                if(self.savedir is not None):
+                    self.embedding_net_wrapper = EmbeddingWrapper(value)
             elif(parameter == 'base_classif'):
                 self.base_classif = value
             elif(parameter == 'learning_rate'):
@@ -294,9 +301,18 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
                 self.num_subepochs = value
             elif(parameter == 'batch_size'):
                 self.batch_size = value
+            elif(parameter == 'num_epochs'):
+                self.num_epochs = value
+            elif(parameter == 'net_arch'):
+                self.net_arch = value
+            elif(parameter == 'num_outputs'):
+                self.num_outputs = value
         return self
 
     def fit(self, X, y):
+        if(self.embedding_net_wrapper is None):
+            self.embedding_net_wrapper = EmbeddingWrapper(self.savedir,
+                                                          num_outputs=self.num_outputs, net_arch=self.net_arch)
         # X, y = check_X_y(X, y)
         # self.classes_ = unique_labels(y)
         self.embedding_net_wrapper._train_cached(X, y, self.learning_rate,
