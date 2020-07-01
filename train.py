@@ -19,8 +19,8 @@ def loadRPDBCSData(nsigs=100000):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800)
     targets, targets_name = D.getMulticlassTargets()
-    print(targets_name)
-    D.remove(((targets[targets >= 2]).index).values)
+    #print(targets_name)
+    # D.remove(((targets[targets >= 2]).index).values)
     D.normalize(37.28941975)
     D.shuffle()
 
