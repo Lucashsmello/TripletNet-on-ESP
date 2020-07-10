@@ -8,7 +8,7 @@ from ..datahandler import BasicTorchDataset
 from siamese_triplet.networks import ClassificationNet
 from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
 from ..trainer import train_tripletNetworkAdvanced, train_classifier, trainClassifier2
-from ..networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, BrunaEmbeddingNet
+from ..networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, TripletNetwork
 import numpy as np
 import os
 from siamese_triplet.losses import OnlineTripletLoss
@@ -46,7 +46,7 @@ def INCREMENT_FOLD_ID():
 
 def _loadTorchModel(fpath, rawmodel):
     if(os.path.exists(fpath)):
-        #print('Loading model "%s"' % fpath)
+        # print('Loading model "%s"' % fpath)
         checkpoint = torch.load(fpath)
         rawmodel.load_state_dict(checkpoint['state_dict'])
         rawmodel.cuda()
@@ -164,136 +164,42 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
         return extract_embeddings(dataloader, self.embedding_net, use_cuda=True, with_labels=False)
 
 
-class EmbeddingWrapper:
-    def __init__(self, base_dir=None, num_outputs=8, net_arch=lmelloEmbeddingNet):
-        self.base_dir = base_dir
-        self.num_outputs = num_outputs
-        self.model_loaded = False
-        self.embedding_net = net_arch(num_outputs)
-
-    @staticmethod
-    def loadModel(fpath: str, net_arch=lmelloEmbeddingNet) -> 'EmbeddingWrapper':
-        checkpoint = torch.load(fpath)
-        num_outputs = checkpoint['num_outputs']
-        if('net_arch_name' in checkpoint):
-            msg = "Network arch in %s is incompatible with %s. Try using parameter 'net_arch' from %s.loadModel() properly."
-            msg = msg % (fpath, net_arch.__name__, EmbeddingWrapper.__name__)
-            assert(checkpoint['net_arch_name'] == net_arch.__name__), msg
-        model = EmbeddingWrapper(num_outputs=num_outputs, net_arch=net_arch)
-        model.embedding_net.load_state_dict(checkpoint['state_dict'])
-        model.embedding_net.cuda()
-        return model
-
-    def save(self, fpath):
-        data_to_save = {'state_dict': self.embedding_net.state_dict(),
-                        'num_outputs': self.num_outputs,
-                        'net_arch_name': self.embedding_net.__class__.__name__}
-        torch.save(data_to_save, fpath)
-
-    def train(self, D, learning_rate, num_subepochs, batch_size, niterations=16,
-              loss_function_generator=OnlineTripletLoss, custom_trainepoch=train_epoch):
-        if(not isinstance(D, torch.utils.data.Dataset)):
-            D = BasicTorchDataset(D[0], D[1])
-        margin1 = 1.0
-        triplet_train_config = [
-            {'triplet-selector': RandomNegativeTripletSelector,
-             'learning-rate': learning_rate,
-             'margin': margin1,
-             'nepochs': num_subepochs
-             }
-        ]
-        self.embedding_net = train_tripletNetworkAdvanced(
-            D, None, self.embedding_net, triplet_train_config,
-            gamma=0.1, beta=0.25, niterations=niterations, batch_size=batch_size,
-            loss_function_generator=loss_function_generator, custom_trainepoch=custom_trainepoch)
-
-    def _train_cached(self, X, y, learning_rate, num_subepochs, batch_size, niterations=16,
-                      loss_function_generator=OnlineTripletLoss, custom_trainepoch=train_epoch):
-        if(self.model_loaded):
-            return
-        global FOLD_ID
-        FOLD_ID += 1
-        # self.scaler = fitScaler(X)
-
-        model_loaded = False
-
-        if(self.base_dir is not None):
-            if(self.base_dir[-3:] == '.pt' or self.base_dir[-4:] == '.pth'):
-                fpath = self.base_dir
-            else:
-                # fpath = "%s/%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                #                                   X.shape[0], X.shape[1], sum(y), self.num_outputs)
-                fpath = "%s/%d-%d-%d-%d-%d-%d-%d-%d.pt" % (self.base_dir, FOLD_ID,
-                                                           X.shape[0], X.shape[1],
-                                                           sum(y), self.num_outputs,
-                                                           1e+6 * learning_rate, num_subepochs, batch_size)
-            model_loaded = _loadTorchModel(fpath, self.embedding_net)
-            if(not model_loaded):
-                print('"%s" not found or not a torch model' % fpath)
-
-        if(not model_loaded):
-            print("Training new model")
-            self.train((X, y), learning_rate, num_subepochs, batch_size=batch_size,
-                       niterations=niterations,
-                       loss_function_generator=loss_function_generator, custom_trainepoch=custom_trainepoch)
-            if(self.base_dir is not None):
-                self.save(fpath)
-
-    def embed(self, X):
-        """
-        Transform features from the original to the triplet-space.
-
-        Args:
-            X (Matrix): Matrix of amplitudes.
-
-        Returns:
-            The encodding in an matrix of len(X) lines and self.num_outputs columns.
-        """
-        # X = self.scaler.transform(X)
-        if(not isinstance(X, torch.utils.data.Dataset)):
-            D = BasicTorchDataset(X, None)
-        else:
-            D = X
-        kwargs = {'num_workers': 3, 'pin_memory': True}
-        dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
-        return extract_embeddings(dataloader, self.embedding_net, num_outputs=self.num_outputs, use_cuda=True, with_labels=False)
-
-
 class AugmentedClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, base_classif, savedir=None,
-                 learning_rate=1e-3, num_subepochs=35, num_epochs=16, batch_size=16,
-                 custom_trainepoch=train_epoch, net_arch=lmelloEmbeddingNet, num_outputs=8):
+    def __init__(self, base_classif, net_arch):
         self.net_arch = net_arch
-        self.embedding_net_wrapper = None
+        self.tripletnet = None
         self.base_classif = base_classif
-        self.savedir = savedir
+        self.train_tripletnet = True
+        self.learning_rate = 1e-3
+        self.num_subepochs = 10
+        self.num_epochs = 10
+        self.batch_size = 32
+        self.custom_trainepoch = train_epoch
+
+    def set_train_params(self, learning_rate, num_subepochs, num_epochs, batch_size):
         self.learning_rate = learning_rate
         self.num_subepochs = num_subepochs
         self.num_epochs = num_epochs
         self.batch_size = batch_size
+
+    def set_custom_training(self, custom_trainepoch):
         self.custom_trainepoch = custom_trainepoch
-        self.num_outputs = num_outputs
 
     def get_params(self, deep=True):
         return {"base_classif": self.base_classif,
-                "savedir": self.savedir,
                 "learning_rate": self.learning_rate,
                 "num_subepochs": self.num_subepochs,
                 "batch_size": self.batch_size,
                 "num_epochs": self.num_epochs,
                 "custom_trainepoch": self.custom_trainepoch,
                 "net_arch": self.net_arch,
-                "num_outputs": self.num_outputs
+                "train_tripletnet": self.train_tripletnet
                 }
 
     def set_params(self, **parameters):
         for parameter, value in parameters.items():
             # setattr(self, parameter, value)
-            if(parameter == 'savedir'):
-                self.savedir = value
-                if(self.savedir is not None):
-                    self.embedding_net_wrapper = EmbeddingWrapper(value)
-            elif(parameter == 'base_classif'):
+            if(parameter == 'base_classif'):
                 self.base_classif = value
             elif(parameter == 'learning_rate'):
                 self.learning_rate = value
@@ -305,27 +211,25 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
                 self.num_epochs = value
             elif(parameter == 'net_arch'):
                 self.net_arch = value
-            elif(parameter == 'num_outputs'):
-                self.num_outputs = value
+            elif(parameter == 'train_tripletnet'):
+                self.train_tripletnet = value
         return self
 
     def fit(self, X, y):
-        if(self.embedding_net_wrapper is None):
-            self.embedding_net_wrapper = EmbeddingWrapper(self.savedir,
-                                                          num_outputs=self.num_outputs, net_arch=self.net_arch)
-        # X, y = check_X_y(X, y)
+        if(self.tripletnet is None):
+            self.tripletnet = TripletNetwork(self.net_arch)
         # self.classes_ = unique_labels(y)
-        self.embedding_net_wrapper._train_cached(X, y, self.learning_rate,
-                                                 self.num_subepochs, self.batch_size, niterations=self.num_epochs,
-                                                 custom_trainepoch=self.custom_trainepoch)
-        newX = self.embedding_net_wrapper.embed(X)
+        if(self.train_tripletnet):
+            self.tripletnet.train((X, y), self.learning_rate,
+                                  self.num_subepochs, self.batch_size, num_epochs=self.num_epochs,
+                                  custom_trainepoch=self.custom_trainepoch)
+        newX = self.tripletnet.embed(X).cpu().numpy()
         # pairplot_embeddings(newX, y)
         self.base_classif.fit(newX, y)
         return self
 
     def predict(self, X):
-        X = check_array(X)
-        newX = self.embedding_net_wrapper.embed(X)
+        newX = self.tripletnet.embed(X).cpu().numpy()
         return self.base_classif.predict(newX)
 
     # def predict_proba(self, X):

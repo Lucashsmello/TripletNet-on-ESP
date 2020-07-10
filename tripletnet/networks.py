@@ -1,12 +1,11 @@
 import torch.nn as nn
 import torch
 import numpy as np
-
-
-def initWeights(m):
-    if type(m) == nn.Linear or type(m) == nn.Conv1d:
-        torch.nn.init.xavier_uniform(m.weight)
-        m.bias.data.fill_(0.01)
+from siamese_triplet.losses import OnlineTripletLoss
+from .trainer import train_tripletNetworkAdvanced
+import siamese_triplet.trainer
+from .datahandler import BasicTorchDataset
+from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
 
 
 class EmbeddingNetMNIST(nn.Module):
@@ -31,35 +30,81 @@ class EmbeddingNetMNIST(nn.Module):
         return x
 
 
-class BrunaEmbeddingNet(nn.Module):
-    def __init__(self, num_outputs=2):
-        super(BrunaEmbeddingNet, self).__init__()
-        self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Conv1d(16, 16, 1), nn.LeakyReLU(negative_slope=0.05),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 3), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.Conv1d(32, 32, 3), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 3), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.Conv1d(64, 64, 1), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2)
-        )
-        self.fc = nn.Sequential(nn.Linear(64 * 378, num_outputs))
+class TripletNetwork:
+    def __init__(self, net_arch):
+        self.net_arch = net_arch
 
-    def forward(self, x):
-        output = self.convnet(x)
-        output = output.view(output.size()[0], -1)
-        output = self.fc(output)
-        return output
+    def train(self, D, learning_rate, num_subepochs, batch_size, num_epochs=16,
+              loss_function_generator=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
+        if(not isinstance(D, torch.utils.data.Dataset)):
+            D = BasicTorchDataset(D[0], D[1], single_channel=True)
+        margin1 = 1.0
+        triplet_train_config = [
+            {'triplet-selector': RandomNegativeTripletSelector,
+             'learning-rate': learning_rate,
+             'margin': margin1,
+             'nepochs': num_subepochs
+             }
+        ]
+        train_tripletNetworkAdvanced(
+            D, None, self.net_arch, triplet_train_config,
+            gamma=0.1, beta=0.25, niterations=num_epochs, batch_size=batch_size,
+            loss_function_generator=loss_function_generator, custom_trainepoch=custom_trainepoch)
 
-    def get_embedding(self, x):
-        return self.forward(x)
+    def embed(self, X):
+        """
+        Transform features from the original to the triplet-space.
+
+        Args:
+            X: Each line contains an object. Should be a tensor or a torch.utils.data.Dataset that returns tensors.
+
+        Returns:
+            The encodding in an matrix of len(X) lines.
+        """
+        if(not isinstance(X, torch.utils.data.Dataset)):
+            D = BasicTorchDataset(X, None, single_channel=True)
+        else:
+            D = X
+        kwargs = {'num_workers': 3, 'pin_memory': True}
+        dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
+
+        with torch.no_grad():
+            for last_module in self.net_arch.modules():
+                pass
+            ret = torch.empty((len(X), last_module.out_features), dtype=torch.float32).cuda()
+            k = 0
+            for x in dataloader:
+                if(isinstance(x, tuple) or isinstance(x, list)):
+                    x = x[0]
+                x = x.cuda()
+                output = self.net_arch.forward(x)
+                ret[k:k+len(output)] = output
+                k += len(output)
+        return ret
+
+    def save(self, fpath):
+        data_to_save = {'state_dict': self.net_arch.state_dict(),
+                        'net_arch_name': self.net_arch.__class__.__name__}
+        torch.save(data_to_save, fpath)
+
+    @staticmethod
+    def load(fpath, net_arch, map_location=None) -> 'TripletNetwork':
+        checkpoint = torch.load(fpath, map_location=map_location)
+        if('net_arch_name' in checkpoint):
+            msg = "Network arch in %s is incompatible with %s."
+            msg = msg % (fpath, net_arch.__class__.__name__)
+            assert(checkpoint['net_arch_name'] == net_arch.__class__.__name__), msg
+        net_arch.load_state_dict(checkpoint['state_dict'])
+        return TripletNetwork(net_arch)
+
+    def cuda(self):
+        self.net_arch.cuda()
+        return self
 
 
 class lmelloEmbeddingNet(nn.Module):
     def __init__(self, num_outputs, num_inputs_channels=1):
-        super(lmelloEmbeddingNet, self).__init__()
-        self.num_outputs = num_outputs
+        super().__init__()
         self.convnet = nn.Sequential(
             nn.Conv1d(num_inputs_channels, 16, 5), nn.LeakyReLU(negative_slope=0.05),
             nn.Dropout(p=0.2),
@@ -79,12 +124,9 @@ class lmelloEmbeddingNet(nn.Module):
 
     def forward(self, x):
         output = self.convnet(x)
-        output = output.view(output.size()[0], -1)
+        output = output.view(output.size()[0], -1)  # flatten
         output = self.fc(output)
         return output
-
-    def get_embedding(self, x):
-        return self.forward(x)
 
     def encode(self, x):
         with torch.no_grad():
@@ -134,66 +176,6 @@ class lmelloEmbeddingNet2(lmelloEmbeddingNet):
 
     def get_embedding(self, x):
         return self.forward(x)
-
-
-class lmelloOnlyConvNet(nn.Module):
-    def __init__(self, num_outputs):
-        super().__init__()
-        # input size: 6100
-        self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),  # out: 94
-            nn.Conv1d(64, 128, 5), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.MaxPool1d(2, stride=2),
-            nn.Conv1d(128, 256, 3, padding=1), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.Conv1d(256, 128, 3, padding=1), nn.LeakyReLU(negative_slope=0.05), nn.Dropout(p=0.2),
-            nn.Conv1d(128, num_outputs, 45)  # out: 45
-        )
-
-    def forward(self, x):
-        output = self.convnet(x)
-        return output.reshape(x.shape[0], output.shape[1])
-
-
-class lmelloEmbeddingNetReducedFC(lmelloEmbeddingNet):
-    def __init__(self, num_outputs):
-        super().__init__(num_outputs)
-        self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4)
-        )
-
-        self.fc = nn.Sequential(nn.Linear(64 * 94, num_outputs),
-                                )
-
-
-class lmelloEmbeddingNetReducedConv(lmelloEmbeddingNet):
-    def __init__(self, num_outputs):
-        super().__init__(num_outputs)
-        self.convnet = nn.Sequential(
-            nn.Conv1d(1, 16, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.LeakyReLU(negative_slope=0.05),
-            nn.Dropout(p=0.2),
-            nn.MaxPool1d(8, stride=8)
-        )
-
-        self.fc = nn.Sequential(nn.Linear(32 * 190, 192),
-                                nn.LeakyReLU(negative_slope=0.05),
-                                nn.Linear(192, num_outputs)
-                                )
 
 
 def extract_embeddings(dataloader, model, num_outputs=-1, use_cuda=True, with_labels=True):

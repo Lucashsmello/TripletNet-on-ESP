@@ -1,14 +1,15 @@
 import torch
 import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset
-from tripletnet.classifiers.augmented_classifier import EmbeddingWrapper, ClassifierConvNet, AugmentedClassifier
+from tripletnet.classifiers.augmented_classifier import ClassifierConvNet, AugmentedClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from tripletnet.losses import CorrelationMatrixLoss, DistanceCorrelationLoss
 from siamese_triplet.losses import OnlineTripletLoss
+from tripletnet.networks import TripletNetwork
 from torchvision import transforms
-from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet, lmelloOnlyConvNet, lmelloEmbeddingNetReducedConv, lmelloEmbeddingNetReducedFC
+from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet
 import numpy as np
 
 import pandas as pd
@@ -19,7 +20,7 @@ def loadRPDBCSData(nsigs=100000):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800)
     targets, targets_name = D.getMulticlassTargets()
-    #print(targets_name)
+    # print(targets_name)
     # D.remove(((targets[targets >= 2]).index).values)
     D.normalize(37.28941975)
     D.shuffle()
@@ -70,24 +71,32 @@ def main(save_file, Dtrain, Dtest=None):
                'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
     X, Y = Dtrain
 
-    net = EmbeddingWrapper(num_outputs=8, net_arch=lmelloEmbeddingNet)
+    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda())
+    # net = TripletNetwork.load('/tmp/tmp.pt', net_arch=lmelloEmbeddingNet(8).cuda(), map_location='cuda:0')
+
+    # net = EmbeddingWrapper(num_outputs=8, net_arch=lmelloEmbeddingNet)
     # net = EmbeddingWrapper(num_outputs=8, net_arch=EmbeddingNetMNIST)
     # net.train(Dtrain, learning_rate=1e-3, num_subepochs=20, batch_size=25, niterations=1,
     #           loss_function_generator=DistanceCorrelationLoss)
     # net.train(Dtrain, learning_rate=1e-3, num_subepochs=8, batch_size=25, niterations=8,
     #           loss_function_generator=DistanceCorrelationLoss)
-    net.train(Dtrain, learning_rate=1e-3, num_subepochs=9, batch_size=25, niterations=9,
-              loss_function_generator=OnlineTripletLoss)
+    # net.train(Dtrain, learning_rate=1e-3, num_subepochs=8, batch_size=25, num_epochs=1,
+    #           loss_function_generator=OnlineTripletLoss)
     # net.train(Dtrain, learning_rate=1e-3, num_subepochs=9, batch_size=25, niterations=9,
     #       loss_function_generator=CorrelationMatrixLoss)
-    net.save(save_file)
+    # net.save(save_file)
 
     """Test"""
     if(Dtest is not None):
         Xtest, Ytest = Dtest
-        clf = AugmentedClassifier(RandomForestClassifier(n_estimators=100))
-        clf.embedding_net_wrapper = net
-        net.model_loaded = True
+        clf = AugmentedClassifier(RandomForestClassifier(n_estimators=100),
+                                  net_arch=net.net_arch)
+        clf.train_tripletnet = False
+        # clf.set_train_params(num_epochs=1,
+        #                      num_subepochs=13,
+        #                      batch_size=25,
+        #                      learning_rate=1e-3)
+
         clf.fit(X, Y)
         preds = clf.predict(Xtest)
         stats = {name: [m(Ytest, preds)] for name, m in metrics.items()}
@@ -114,7 +123,6 @@ def main2(save_file, D, Dtest=None, end2end=True):
 
     X, Y = D
     net.fit(X, Y)
-    net.save(save_file)
 
     """Test"""
     if(Dtest is not None):
