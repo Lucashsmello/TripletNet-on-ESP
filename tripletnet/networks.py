@@ -35,7 +35,7 @@ class TripletNetwork:
         self.net_arch = net_arch
 
     def train(self, D, learning_rate, num_subepochs, batch_size, num_epochs=16,
-              loss_function_generator=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
+              custom_loss=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
         if(not isinstance(D, torch.utils.data.Dataset)):
             D = BasicTorchDataset(D[0], D[1], single_channel=True)
         margin1 = 1.0
@@ -49,7 +49,7 @@ class TripletNetwork:
         train_tripletNetworkAdvanced(
             D, None, self.net_arch, triplet_train_config,
             gamma=0.1, beta=0.25, niterations=num_epochs, batch_size=batch_size,
-            loss_function_generator=loss_function_generator, custom_trainepoch=custom_trainepoch)
+            loss_function_generator=custom_loss, custom_trainepoch=custom_trainepoch)
 
     def embed(self, X):
         """
@@ -59,7 +59,7 @@ class TripletNetwork:
             X: Each line contains an object. Should be a tensor or a torch.utils.data.Dataset that returns tensors.
 
         Returns:
-            The encodding in an matrix of len(X) lines.
+            The encodding in a pytorch.tensor matrix of len(X) lines.
         """
         if(not isinstance(X, torch.utils.data.Dataset)):
             D = BasicTorchDataset(X, None, single_channel=True)
@@ -99,6 +99,10 @@ class TripletNetwork:
 
     def cuda(self):
         self.net_arch.cuda()
+        return self
+
+    def eval(self):
+        self.net_arch.eval()
         return self
 
 

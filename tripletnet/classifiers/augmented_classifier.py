@@ -11,8 +11,8 @@ from ..trainer import train_tripletNetworkAdvanced, train_classifier, trainClass
 from ..networks import extract_embeddings, lmelloEmbeddingNet, lmelloEmbeddingNet2, TripletNetwork
 import numpy as np
 import os
-from siamese_triplet.losses import OnlineTripletLoss
 from siamese_triplet.trainer import train_epoch
+from siamese_triplet.losses import OnlineTripletLoss
 
 FOLD_ID = 0
 
@@ -166,8 +166,12 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
 
 class AugmentedClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, base_classif, net_arch):
-        self.net_arch = net_arch
-        self.tripletnet = None
+        if(isinstance(net_arch, TripletNetwork)):
+            self.tripletnet = net_arch
+            self.net_arch = self.tripletnet.net_arch
+        else:
+            self.tripletnet = None
+            self.net_arch = net_arch
         self.base_classif = base_classif
         self.train_tripletnet = True
         self.learning_rate = 1e-3
@@ -175,6 +179,7 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         self.num_epochs = 10
         self.batch_size = 32
         self.custom_trainepoch = train_epoch
+        self.custom_loss = OnlineTripletLoss
 
     def set_train_params(self, learning_rate, num_subepochs, num_epochs, batch_size):
         self.learning_rate = learning_rate
@@ -184,6 +189,12 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
 
     def set_custom_training(self, custom_trainepoch):
         self.custom_trainepoch = custom_trainepoch
+
+    def set_custom_loss(self, custom_loss):
+        """
+            see siamese_triplet.losses.OnlineTripletLoss
+        """
+        self.custom_loss = custom_loss
 
     def get_params(self, deep=True):
         return {"base_classif": self.base_classif,
@@ -222,7 +233,8 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
         if(self.train_tripletnet):
             self.tripletnet.train((X, y), self.learning_rate,
                                   self.num_subepochs, self.batch_size, num_epochs=self.num_epochs,
-                                  custom_trainepoch=self.custom_trainepoch)
+                                  custom_trainepoch=self.custom_trainepoch,
+                                  custom_loss=self.custom_loss)
         newX = self.tripletnet.embed(X).cpu().numpy()
         # pairplot_embeddings(newX, y)
         self.base_classif.fit(newX, y)
