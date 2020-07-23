@@ -7,6 +7,7 @@ from siamese_triplet.datasets import BalancedBatchSampler
 from siamese_triplet import trainer
 from siamese_triplet.metrics import Metric
 from siamese_triplet.trainer import train_epoch
+from .datahandler import BasicTorchDataset
 
 
 class AccuracyNotZeroMetric(Metric):
@@ -88,20 +89,24 @@ def train_tripletNetworkAdvanced(data_train, triplet_test_loader, model,
                                  loss_function_generator=OnlineTripletLoss,
                                  use_cuda=True,
                                  custom_trainepoch=train_epoch):
+    if(not isinstance(data_train, torch.utils.data.DataLoader)):
+        if(not isinstance(data_train, torch.utils.data.Dataset)):
+            data_train = BasicTorchDataset(data_train[0], data_train[1], single_channel=True)
+        T = data_train.targets
+        nclasses = len(T.unique())
+        batch_sampler = BalancedBatchSampler(T, n_classes=nclasses, n_samples=batch_size)
+        kwargs = {'num_workers': 3, 'pin_memory': True}
+        triplet_train_loader = torch.utils.data.DataLoader(data_train, batch_sampler=batch_sampler, **kwargs)
+    else:
+        triplet_train_loader = data_train
+
     if use_cuda:
         model.cuda()
     log_interval = 2000
     g = 1
     b = 1
-    kwargs = {'num_workers': 3, 'pin_memory': True}
-    T = data_train.targets
-    nclasses = len(T.unique())
 
     for i in range(niterations):
-        batch_sampler = BalancedBatchSampler(T, n_classes=nclasses, n_samples=batch_size)
-        triplet_train_loader = torch.utils.data.DataLoader(
-            data_train, batch_sampler=batch_sampler, **kwargs)
-
         print("====train_tripletNetworkAdvanced: iteration %d====" % (i+1))
         for j, strat in enumerate(triplet_strategies):
             lr = strat['learning-rate'] * g

@@ -34,10 +34,8 @@ class TripletNetwork:
     def __init__(self, net_arch):
         self.net_arch = net_arch
 
-    def train(self, D, learning_rate, num_subepochs, batch_size, num_epochs=16,
+    def train(self, D, learning_rate, num_subepochs, batch_size=16, num_epochs=16,
               custom_loss=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
-        if(not isinstance(D, torch.utils.data.Dataset)):
-            D = BasicTorchDataset(D[0], D[1], single_channel=True)
         margin1 = 1.0
         triplet_train_config = [
             {'triplet-selector': RandomNegativeTripletSelector,
@@ -69,9 +67,13 @@ class TripletNetwork:
         dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
 
         with torch.no_grad():
-            for last_module in self.net_arch.modules():
-                pass
-            ret = torch.empty((len(X), last_module.out_features), dtype=torch.float32).cuda()
+            if(hasattr(self.net_arch, 'num_outputs')):
+                num_outputs = self.net_arch.num_outputs
+            else:
+                for last_module in self.net_arch.modules():
+                    pass
+                num_outputs = last_module.out_features
+            ret = torch.empty((len(X), num_outputs), dtype=torch.float32).cuda()
             k = 0
             for x in dataloader:
                 if(isinstance(x, tuple) or isinstance(x, list)):
