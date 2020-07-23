@@ -165,7 +165,10 @@ class ClassifierConvNet(BaseEstimator, ClassifierMixin):
 
 
 class AugmentedClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, base_classif, net_arch):
+    def __init__(self, base_classif, net_arch,
+                 train_tripletnet=True,
+                 learning_rate=1e-3, num_subepochs=10, num_epochs=10, batch_size=32,
+                 custom_trainepoch=train_epoch, custom_loss=OnlineTripletLoss):
         if(isinstance(net_arch, TripletNetwork)):
             self.tripletnet = net_arch
             self.net_arch = self.tripletnet.net_arch
@@ -173,13 +176,13 @@ class AugmentedClassifier(BaseEstimator, ClassifierMixin):
             self.tripletnet = None
             self.net_arch = net_arch
         self.base_classif = base_classif
-        self.train_tripletnet = True
-        self.learning_rate = 1e-3
-        self.num_subepochs = 10
-        self.num_epochs = 10
-        self.batch_size = 32
-        self.custom_trainepoch = train_epoch
-        self.custom_loss = OnlineTripletLoss
+        self.train_tripletnet = train_tripletnet
+        self.learning_rate = learning_rate
+        self.num_subepochs = num_subepochs
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.custom_trainepoch = custom_trainepoch
+        self.custom_loss = custom_loss
 
     def set_train_params(self, learning_rate, num_subepochs, num_epochs, batch_size):
         self.learning_rate = learning_rate
