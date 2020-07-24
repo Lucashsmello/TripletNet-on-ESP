@@ -2,10 +2,12 @@ import torch.nn as nn
 import torch
 import numpy as np
 from siamese_triplet.losses import OnlineTripletLoss
+from siamese_triplet.trainer import train_epoch
 from .trainer import train_tripletNetworkAdvanced
 import siamese_triplet.trainer
 from .datahandler import BasicTorchDataset
 from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
+from sklearn.base import BaseEstimator, TransformerMixin
 
 
 class EmbeddingNetMNIST(nn.Module):
@@ -30,9 +32,66 @@ class EmbeddingNetMNIST(nn.Module):
         return x
 
 
-class TripletNetwork:
-    def __init__(self, net_arch):
+class TripletNetwork(BaseEstimator, TransformerMixin):
+    def __init__(self, net_arch,
+                 learning_rate=1e-3, num_subepochs=10, num_epochs=10, batch_size=32, dont_train=False,
+                 custom_trainepoch=train_epoch,
+                 custom_loss=OnlineTripletLoss):
         self.net_arch = net_arch
+        self.learning_rate = learning_rate
+        self.num_subepochs = num_subepochs
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.custom_loss = custom_loss
+        self.custom_trainepoch = custom_trainepoch
+        self.dont_train = dont_train
+
+    def get_params(self, deep=True):
+        return {
+            "learning_rate": self.learning_rate,
+            "num_subepochs": self.num_subepochs,
+            "batch_size": self.batch_size,
+            "num_epochs": self.num_epochs,
+            "custom_trainepoch": self.custom_trainepoch,
+            "custom_loss": self.custom_loss,
+            "net_arch": self.net_arch,
+            "dont_train": self.dont_train
+        }
+
+    def set_params(self, **parameters):
+        for parameter, value in parameters.items():
+            if(parameter == 'learning_rate'):
+                self.learning_rate = value
+            elif(parameter == 'num_subepochs'):
+                self.num_subepochs = value
+            elif(parameter == 'batch_size'):
+                self.batch_size = value
+            elif(parameter == 'num_epochs'):
+                self.num_epochs = value
+            elif(parameter == 'net_arch'):
+                self.net_arch = value
+            elif(parameter == 'custom_loss'):
+                self.custom_loss = value
+            elif(parameter == 'custom_trainepoch'):
+                self.custom_trainepoch = value
+            elif(parameter == 'dont_train'):
+                self.dont_train = value
+            print("Parameter %s not recognized by TripletNetwork!" % parameter)
+        return self
+
+    def fit(self, X, y=None):
+        if(not self.dont_train):
+            if(isinstance(X, torch.utils.data.Dataset)):
+                D = X
+            else:
+                D = (X, y)
+            self.train(D, self.learning_rate, self.num_subepochs, self.batch_size, self.num_epochs,
+                       custom_loss=self.custom_loss,
+                       custom_trainepoch=self.custom_trainepoch)
+        return self
+
+    def transform(self, X):
+        return self.embed(X).cpu().numpy()
 
     def train(self, D, learning_rate, num_subepochs, batch_size=16, num_epochs=16,
               custom_loss=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):

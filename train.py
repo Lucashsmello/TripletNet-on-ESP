@@ -3,7 +3,7 @@ import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset
 from tripletnet.classifiers.augmented_classifier import ClassifierConvNet, AugmentedClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from tripletnet.losses import CorrelationMatrixLoss, DistanceCorrelationLoss
 from siamese_triplet.losses import OnlineTripletLoss
@@ -11,8 +11,10 @@ from tripletnet.networks import TripletNetwork
 from torchvision import transforms
 from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet
 import numpy as np
-
 import pandas as pd
+from tripletnet.datahandler import BasicTorchDataset
+from torch.utils.data.sampler import BatchSampler
+from sklearn.model_selection import cross_validate
 
 
 def loadRPDBCSData(nsigs=100000):
@@ -25,25 +27,10 @@ def loadRPDBCSData(nsigs=100000):
     D.normalize(37.28941975)
     D.shuffle()
 
-    # sampler = StratifiedKFold(10, shuffle=False)
-
     Feats = D.asMatrix()[:, :6100]
     targets, targets_name = D.getMulticlassTargets()
 
-    # idxs = None
-    # for train_index, test_index in sampler.split(Feats, targets):
-    #     if(idxs is None):
-    #         idxs = test_index
-    #     else:
-    #         idxs = np.concatenate((idxs, test_index), axis=0)
-    # Feats = Feats[idxs]
-    # targets = targets[idxs]
-    n = int(len(targets) * 0.8)
-    X = Feats[:n]
-    Y = targets[:n]
-    Xtest = Feats[n:]
-    Ytest = targets[n:]
-    return ((X, Y), (Xtest, Ytest))
+    return Feats, targets
 
 
 def loadMNIST():
@@ -64,45 +51,28 @@ def loadMNIST():
     return dataset, dataset_test
 
 
-def main(save_file, Dtrain, Dtest=None):
+def main(save_file, D):
+    from sklearn.model_selection import cross_validate
+    from sklearn.pipeline import Pipeline
+
     metrics = {'Accuracy': accuracy_score,
                'f-macro': lambda x, y: f1_score(x, y, average='macro'),
                'prec-macro': lambda x, y: precision_score(x, y, average='macro'),
                'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
-    X, Y = Dtrain
+    X, Y = D
 
-    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda())
+    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda(),
+                         learning_rate=1e-3, num_subepochs=5, batch_size=25, num_epochs=5,
+                         custom_loss=OnlineTripletLoss)
     # net = TripletNetwork.load('/tmp/tmp.pt', net_arch=lmelloEmbeddingNet(8).cuda(), map_location='cuda:0')
+    # net.dont_train=True
+    ppp = Pipeline([('embedder', net),
+                    ('classifier', RandomForestClassifier(100))])
 
-    # net = EmbeddingWrapper(num_outputs=8, net_arch=lmelloEmbeddingNet)
-    # net = EmbeddingWrapper(num_outputs=8, net_arch=EmbeddingNetMNIST)
-    # net.train(Dtrain, learning_rate=1e-3, num_subepochs=20, batch_size=25, niterations=1,
-    #           loss_function_generator=DistanceCorrelationLoss)
-    # net.train(Dtrain, learning_rate=1e-3, num_subepochs=8, batch_size=25, niterations=8,
-    #           loss_function_generator=DistanceCorrelationLoss)
-    # net.train(Dtrain, learning_rate=1e-3, num_subepochs=8, batch_size=25, num_epochs=1,
-    #           loss_function_generator=OnlineTripletLoss)
-    # net.train(Dtrain, learning_rate=1e-3, num_subepochs=9, batch_size=25, niterations=9,
-    #       loss_function_generator=CorrelationMatrixLoss)
-    # net.save(save_file)
-
-    """Test"""
-    if(Dtest is not None):
-        Xtest, Ytest = Dtest
-        clf = AugmentedClassifier(RandomForestClassifier(n_estimators=100),
-                                  net_arch=net.net_arch)
-        clf.train_tripletnet = False
-        # clf.set_train_params(num_epochs=1,
-        #                      num_subepochs=13,
-        #                      batch_size=25,
-        #                      learning_rate=1e-3)
-
-        clf.fit(X, Y)
-        preds = clf.predict(Xtest)
-        stats = {name: [m(Ytest, preds)] for name, m in metrics.items()}
-        df = pd.DataFrame(stats)
-        print("")
-        print(df)
+    sksampler = ShuffleSplit(1, test_size=0.2, random_state=123)
+    scores = cross_validate(ppp, dataset, Y, scoring=['accuracy', 'f1_macro'], cv=sksampler)
+    print(scores)
+    net.save(save_file)
 
 
 def main2(save_file, D, Dtest=None, end2end=True):
@@ -140,7 +110,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outfile', type=str, required=True)
     args = parser.parse_args()
 
-    Dtrain, Dtest = loadRPDBCSData()
+    D = loadRPDBCSData(1000)
     # D = loadMNIST()
-    main(args.outfile, Dtrain, Dtest)
+    main(args.outfile, D)
     # main2(args.outfile, Dtrain, Dtest, end2end=True)
