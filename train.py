@@ -1,26 +1,28 @@
 import torch
+from torch import nn
 import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset
-from tripletnet.classifiers.augmented_classifier import ClassifierConvNet, AugmentedClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.model_selection import cross_validate
+from sklearn.pipeline import Pipeline
 from tripletnet.losses import CorrelationMatrixLoss, DistanceCorrelationLoss
 from siamese_triplet.losses import OnlineTripletLoss
 from tripletnet.networks import TripletNetwork
+from tripletnet.datahandler import BalancedDataLoader
 from torchvision import transforms
 from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet
 import numpy as np
 import pandas as pd
 from tripletnet.datahandler import BasicTorchDataset
-from torch.utils.data.sampler import BatchSampler
-from sklearn.model_selection import cross_validate
+from time import time
 
 
 def loadRPDBCSData(nsigs=100000):
     data_dir = 'data/data_classified_v6'
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
-                    remove_first=100, nsigs=nsigs, npoints=10800)
+                    remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     targets, targets_name = D.getMulticlassTargets()
     # print(targets_name)
     # D.remove(((targets[targets >= 2]).index).values)
@@ -30,7 +32,7 @@ def loadRPDBCSData(nsigs=100000):
     Feats = D.asMatrix()[:, :6100]
     targets, targets_name = D.getMulticlassTargets()
 
-    return Feats, targets
+    return np.expand_dims(Feats, axis=1), targets
 
 
 def loadMNIST():
@@ -52,56 +54,22 @@ def loadMNIST():
 
 
 def main(save_file, D):
-    from sklearn.model_selection import cross_validate
-    from sklearn.pipeline import Pipeline
-
-    metrics = {'Accuracy': accuracy_score,
-               'f-macro': lambda x, y: f1_score(x, y, average='macro'),
-               'prec-macro': lambda x, y: precision_score(x, y, average='macro'),
-               'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
     X, Y = D
+    tripletnet = TripletNetwork(lmelloEmbeddingNet, margin_decay_delay=10,
+                                optimizer=torch.optim.Adam, optimizer__lr=1e-3, optimizer__weight_decay=1e-4,
+                                module__num_outputs=8, device='cuda',
+                                train_split=None,
+                                batch_size=125, max_epochs=30,
+                                criterion=TripletNetwork.OnlineTripletLossWrapper,
+                                iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True)
 
-    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda(),
-                         learning_rate=1e-3, num_subepochs=5, batch_size=25, num_epochs=5,
-                         custom_loss=OnlineTripletLoss)
-    # net = TripletNetwork.load('/tmp/tmp.pt', net_arch=lmelloEmbeddingNet(8).cuda(), map_location='cuda:0')
-    # net.dont_train=True
-    ppp = Pipeline([('embedder', net),
-                    ('classifier', RandomForestClassifier(100))])
+    classifier = Pipeline([('encodding', tripletnet),
+                           ('classifier', RandomForestClassifier(100))])
 
-    sksampler = ShuffleSplit(1, test_size=0.2, random_state=123)
-    scores = cross_validate(ppp, dataset, Y, scoring=['accuracy', 'f1_macro'], cv=sksampler)
+    # classifier.fit(X,Y)
+    sksampler = StratifiedKFold(5, shuffle=True)
+    scores = cross_validate(classifier, X, Y, scoring=['accuracy', 'f1_macro'], cv=sksampler)
     print(scores)
-    net.save(save_file)
-
-
-def main2(save_file, D, Dtest=None, end2end=True):
-    metrics = {'Accuracy': accuracy_score,
-               'f-macro': lambda x, y: f1_score(x, y, average='macro'),
-               'prec-macro': lambda x, y: precision_score(x, y, average='macro'),
-               'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
-
-    nclasses = len(np.bincount(D[1]))
-    if(end2end):
-        encoder_net = lmelloEmbeddingNet(8)
-    else:
-        fpath = '/home/lhsmello/ufes/doutorado/TripletNet-on-ESP/saved_models/lossanalysis/12-05-2020_32outs.pt'
-        encoder_net = EmbeddingWrapper.loadModel(fpath).embedding_net
-        for p in encoder_net.parameters():
-            p.requires_grad = False
-    net = ClassifierConvNet(nclasses, encoder_net=encoder_net)
-
-    X, Y = D
-    net.fit(X, Y)
-
-    """Test"""
-    if(Dtest is not None):
-        Xtest, Ytest = Dtest
-        preds = net.predict(Xtest)
-        stats = {name: [m(Ytest, preds)] for name, m in metrics.items()}
-        df = pd.DataFrame(stats)
-        print("")
-        print(df)
 
 
 if __name__ == '__main__':
@@ -110,7 +78,6 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outfile', type=str, required=True)
     args = parser.parse_args()
 
-    D = loadRPDBCSData(1000)
+    D = loadRPDBCSData()
     # D = loadMNIST()
     main(args.outfile, D)
-    # main2(args.outfile, Dtrain, Dtest, end2end=True)

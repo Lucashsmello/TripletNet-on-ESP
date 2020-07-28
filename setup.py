@@ -1,8 +1,8 @@
 from setuptools import setup
 
-modules = ['networks', 'classifiers.augmented_classifier', 'datahandler', 'trainer']
+modules = ['networks', 'datahandler', 'trainer']
 setup(name='tripletnet-classifier',
-      version='1.2',
+      version='2.0',
       description='Deep Triplet Network',
       url='https://github.com/Lucashsmello/TripletNet-on-ESP',
       author='Lucas Mello',
@@ -15,5 +15,6 @@ setup(name='tripletnet-classifier',
           "torchvision",
           "scikit-learn >= 0.22",
           "pandas >= 0.24"
+          "skorch >= 0.8"
       ],
       zip_safe=False)

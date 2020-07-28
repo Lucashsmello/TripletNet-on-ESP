@@ -3,11 +3,12 @@ import torch
 import numpy as np
 from siamese_triplet.losses import OnlineTripletLoss
 from siamese_triplet.trainer import train_epoch
-from .trainer import train_tripletNetworkAdvanced
 import siamese_triplet.trainer
 from .datahandler import BasicTorchDataset
 from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
 from sklearn.base import BaseEstimator, TransformerMixin
+from skorch import NeuralNet
+import skorch
 
 
 class EmbeddingNetMNIST(nn.Module):
@@ -32,139 +33,72 @@ class EmbeddingNetMNIST(nn.Module):
         return x
 
 
-class TripletNetwork(BaseEstimator, TransformerMixin):
-    def __init__(self, net_arch,
-                 learning_rate=1e-3, num_subepochs=10, num_epochs=10, batch_size=32, dont_train=False,
-                 custom_trainepoch=train_epoch,
-                 custom_loss=OnlineTripletLoss):
-        self.net_arch = net_arch
-        self.learning_rate = learning_rate
-        self.num_subepochs = num_subepochs
-        self.num_epochs = num_epochs
-        self.batch_size = batch_size
-        self.custom_loss = custom_loss
-        self.custom_trainepoch = custom_trainepoch
+class NeuralNetTransformer(NeuralNet, TransformerMixin):
+    def __init__(self, module, dont_train=False, *args, **kwargs):
+        super().__init__(module, *args, **kwargs)
         self.dont_train = dont_train
 
-    def get_params(self, deep=True):
-        return {
-            "learning_rate": self.learning_rate,
-            "num_subepochs": self.num_subepochs,
-            "batch_size": self.batch_size,
-            "num_epochs": self.num_epochs,
-            "custom_trainepoch": self.custom_trainepoch,
-            "custom_loss": self.custom_loss,
-            "net_arch": self.net_arch,
-            "dont_train": self.dont_train
-        }
-
-    def set_params(self, **parameters):
-        for parameter, value in parameters.items():
-            if(parameter == 'learning_rate'):
-                self.learning_rate = value
-            elif(parameter == 'num_subepochs'):
-                self.num_subepochs = value
-            elif(parameter == 'batch_size'):
-                self.batch_size = value
-            elif(parameter == 'num_epochs'):
-                self.num_epochs = value
-            elif(parameter == 'net_arch'):
-                self.net_arch = value
-            elif(parameter == 'custom_loss'):
-                self.custom_loss = value
-            elif(parameter == 'custom_trainepoch'):
-                self.custom_trainepoch = value
-            elif(parameter == 'dont_train'):
-                self.dont_train = value
-            print("Parameter %s not recognized by TripletNetwork!" % parameter)
-        return self
-
-    def fit(self, X, y=None):
-        if(not self.dont_train):
-            if(isinstance(X, torch.utils.data.Dataset)):
-                D = X
-            else:
-                D = (X, y)
-            self.train(D, self.learning_rate, self.num_subepochs, self.batch_size, self.num_epochs,
-                       custom_loss=self.custom_loss,
-                       custom_trainepoch=self.custom_trainepoch)
-        return self
-
     def transform(self, X):
-        return self.embed(X).cpu().numpy()
+        return self.predict(X)
 
-    def train(self, D, learning_rate, num_subepochs, batch_size=16, num_epochs=16,
-              custom_loss=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
-        margin1 = 1.0
-        triplet_train_config = [
-            {'triplet-selector': RandomNegativeTripletSelector,
-             'learning-rate': learning_rate,
-             'margin': margin1,
-             'nepochs': num_subepochs
-             }
-        ]
-        train_tripletNetworkAdvanced(
-            D, None, self.net_arch, triplet_train_config,
-            gamma=0.1, beta=0.25, niterations=num_epochs, batch_size=batch_size,
-            loss_function_generator=custom_loss, custom_trainepoch=custom_trainepoch)
+    def fit(self, X, y=None, **fit_params):
+        if(self.dont_train):
+            return self
+        return super().fit(X, y, **fit_params)
 
-    def embed(self, X):
-        """
-        Transform features from the original to the triplet-space.
 
-        Args:
-            X: Each line contains an object. Should be a tensor or a torch.utils.data.Dataset that returns tensors.
+class TripletNetwork(NeuralNetTransformer):
+    class OnlineTripletLossWrapper(OnlineTripletLoss):
+        def __init__(self, margin=1.0, triplet_selector=RandomNegativeTripletSelector(margin=1.0)):
+            super().__init__(margin=margin, triplet_selector=triplet_selector)
 
-        Returns:
-            The encodding in a pytorch.tensor matrix of len(X) lines.
-        """
-        if(not isinstance(X, torch.utils.data.Dataset)):
-            D = BasicTorchDataset(X, None, single_channel=True)
-        else:
-            D = X
-        kwargs = {'num_workers': 3, 'pin_memory': True}
-        dataloader = torch.utils.data.DataLoader(D, batch_size=32, **kwargs)
+        def forward(self, net_outputs, target):
+            return super().forward(net_outputs, target)[0]
 
-        with torch.no_grad():
-            if(hasattr(self.net_arch, 'num_outputs')):
-                num_outputs = self.net_arch.num_outputs
-            else:
-                for last_module in self.net_arch.modules():
-                    pass
-                num_outputs = last_module.out_features
-            ret = torch.empty((len(X), num_outputs), dtype=torch.float32).cuda()
-            k = 0
-            for x in dataloader:
-                if(isinstance(x, tuple) or isinstance(x, list)):
-                    x = x[0]
-                x = x.cuda()
-                output = self.net_arch.forward(x)
-                ret[k:k+len(output)] = output
-                k += len(output)
-        return ret
+    def __init__(self, module, *args, margin_decay_delay=0, margin_decay_value=0.75, criterion=OnlineTripletLossWrapper, **kwargs):
+        super().__init__(module,
+                         *args,
+                         criterion=criterion,
+                         **kwargs)
+        self.margin_decay_delay = margin_decay_delay
+        self.margin_decay_value = margin_decay_value
+        self.epoch_number = 0
 
-    def save(self, fpath):
-        data_to_save = {'state_dict': self.net_arch.state_dict(),
-                        'net_arch_name': self.net_arch.__class__.__name__}
-        torch.save(data_to_save, fpath)
+    def run_single_epoch(self, dataset, training, prefix, step_fn, **fit_params):
+        super().run_single_epoch(dataset, training, prefix, step_fn, **fit_params)
+        self.epoch_number += 1
+        if(self.margin_decay_delay > 0):
+            if(self.epoch_number % self.margin_decay_delay == 0):
+                self.criterion_.margin *= self.margin_decay_value
+
+    def get_params(self, deep=True, **kwargs):
+        params = super().get_params(deep, **kwargs)
+        del params['epoch_number']
+        return params
 
     @staticmethod
-    def load(fpath, net_arch, map_location=None) -> 'TripletNetwork':
-        checkpoint = torch.load(fpath, map_location=map_location)
-        if('net_arch_name' in checkpoint):
-            msg = "Network arch in %s is incompatible with %s."
-            msg = msg % (fpath, net_arch.__class__.__name__)
-            assert(checkpoint['net_arch_name'] == net_arch.__class__.__name__), msg
-        net_arch.load_state_dict(checkpoint['state_dict'])
-        return TripletNetwork(net_arch)
+    def load(fpath: str, module, **kwargs) -> 'TripletNetwork':
+        net = TripletNetwork(module, **kwargs)
+        net.initialize()
+        net.load_params(fpath)
+        return net
 
-    def cuda(self):
-        self.net_arch.cuda()
-        return self
+    def load_params(self, f_params=None, f_optimizer=None, f_history=None,
+                    checkpoint=None):
+        def _get_state_dict(f):
+            map_location = skorch.utils.get_map_location(self.device)
+            self.device = self._check_device(self.device, map_location)
+            return torch.load(f, map_location=map_location)
 
-    def eval(self):
-        self.net_arch.eval()
-        return self
+        if f_params is not None:
+            msg = (
+                "Cannot load parameters of an un-initialized model. "
+                "Please initialize first by calling .initialize() "
+                "or by fitting the model with .fit(...).")
+            self.check_is_fitted(msg=msg)
+            state_dict = _get_state_dict(f_params)['state_dict']
+            self.module_.load_state_dict(state_dict)
+        super().load_params(None, f_optimizer, f_history, checkpoint)
 
 
 class lmelloEmbeddingNet(nn.Module):
