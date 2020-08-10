@@ -15,10 +15,13 @@ class BasicTorchDataset(torch.utils.data.TensorDataset):
         else:
             super().__init__(tensors)
 
+
 class MyBalancedBatchSampler(BalancedBatchSampler):
     def __init__(self, labels, n_classes, n_samples):
         if(torch.is_tensor(labels)):
             labels = labels.numpy()
+        if(isinstance(labels, list)):
+            labels = np.array(labels)
         self.labels_set = list(set(labels))
         self.label_to_indices = {label: np.where(labels == label)[0]
                                  for label in self.labels_set}
@@ -35,7 +38,13 @@ class MyBalancedBatchSampler(BalancedBatchSampler):
 class BalancedDataLoader(torch.utils.data.DataLoader):
     def __init__(self, dataset, batch_size=1, num_workers=0, collate_fn=None,
                  pin_memory=False, worker_init_fn=None):
-        nclasses = len(set(dataset.y))
-        sampler = MyBalancedBatchSampler(dataset.y, nclasses, batch_size//nclasses)
+        if(hasattr(dataset, 'y')):
+            targets = dataset.y
+        else:
+            targets = dataset.targets
+        if(torch.is_tensor(targets)):
+            targets = targets.cpu().numpy()
+        nclasses = len(set(targets))
+        sampler = MyBalancedBatchSampler(targets, nclasses, batch_size//nclasses)
         super().__init__(dataset, num_workers=num_workers, batch_sampler=sampler,
                          collate_fn=collate_fn, pin_memory=pin_memory, worker_init_fn=worker_init_fn)
