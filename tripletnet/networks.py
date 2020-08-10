@@ -16,18 +16,18 @@ class EmbeddingNetMNIST(nn.Module):
         super().__init__()
         # input: (1,28,28)
         self.convnet = nn.Sequential(
-            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.Dropout2d(0.2),
+            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(),
             nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU()
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.Flatten()
         )
 
-        self.fc = nn.Sequential(nn.Linear(32*14*14, 512), nn.ReLU(), nn.Dropout(0.2),
-                                nn.Linear(512, num_outputs)
+        self.fc = nn.Sequential(nn.Linear(32*14*14, 256), nn.ReLU(),
+                                nn.Linear(256, num_outputs)
                                 )
 
     def forward(self, x):
         x = self.convnet(x)
-        x = x.view(x.size()[0], -1)
         x = self.fc(x)
 
         return x

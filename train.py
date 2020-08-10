@@ -39,7 +39,7 @@ def loadMNIST():
     from torchvision.datasets import MNIST
 
     mean, std = 0.1307, 0.3081
-    dataset = MNIST('/tmp', train=train, download=True,
+    dataset_train = MNIST('/tmp', train=True, download=True,
                     transform=transforms.Compose([
                         transforms.ToTensor(),
                         transforms.Normalize((mean,), (std,))
@@ -50,7 +50,7 @@ def loadMNIST():
                              transforms.Normalize((mean,), (std,))
                          ]))
 
-    return dataset, dataset_test
+    return dataset_train, dataset_test
 
 
 def main(save_file, D):

@@ -14,7 +14,7 @@ setup(name='tripletnet-classifier',
           "torch",
           "torchvision",
           "scikit-learn >= 0.22",
-          "pandas >= 0.24"
+          "pandas >= 0.24",
           "skorch >= 0.8"
       ],
       zip_safe=False)
