@@ -159,7 +159,8 @@ class lmelloEmbeddingNet2(lmelloEmbeddingNet):
             nn.Conv1d(16, 32, 5), nn.ReLU(), nn.Dropout(p=0.2),
             nn.MaxPool1d(4, stride=4),
             nn.Conv1d(32, 64, 5), nn.ReLU(), nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4)
+            nn.MaxPool1d(4, stride=4),
+            nn.Flatten()
         )
 
         self.fc = nn.Sequential(nn.Linear(64 * 94, 192),
@@ -169,7 +170,6 @@ class lmelloEmbeddingNet2(lmelloEmbeddingNet):
 
     def forward(self, x):
         output = self.convnet(x)
-        output = output.view(output.size()[0], -1)
         output = self.fc(output)
         return output
 
