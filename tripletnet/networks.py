@@ -36,7 +36,8 @@ class TripletNetwork(BaseEstimator, TransformerMixin):
     def __init__(self, net_arch,
                  learning_rate=1e-3, num_subepochs=10, num_epochs=10, batch_size=32, dont_train=False,
                  custom_trainepoch=train_epoch,
-                 custom_loss=OnlineTripletLoss):
+                 custom_loss=OnlineTripletLoss,
+                 triplet_selector=RandomNegativeTripletSelector):
         self.net_arch = net_arch
         self.learning_rate = learning_rate
         self.num_subepochs = num_subepochs
@@ -45,6 +46,7 @@ class TripletNetwork(BaseEstimator, TransformerMixin):
         self.custom_loss = custom_loss
         self.custom_trainepoch = custom_trainepoch
         self.dont_train = dont_train
+        self.triplet_selector = triplet_selector
 
     def get_params(self, deep=True):
         return {
@@ -55,7 +57,8 @@ class TripletNetwork(BaseEstimator, TransformerMixin):
             "custom_trainepoch": self.custom_trainepoch,
             "custom_loss": self.custom_loss,
             "net_arch": self.net_arch,
-            "dont_train": self.dont_train
+            "dont_train": self.dont_train,
+            "triplet_selector": self.triplet_selector
         }
 
     def set_params(self, **parameters):
@@ -94,10 +97,12 @@ class TripletNetwork(BaseEstimator, TransformerMixin):
         return self.embed(X).cpu().numpy()
 
     def train(self, D, learning_rate, num_subepochs, batch_size=16, num_epochs=16,
-              custom_loss=OnlineTripletLoss, custom_trainepoch=siamese_triplet.trainer.train_epoch):
+              custom_loss=OnlineTripletLoss,
+              custom_trainepoch=siamese_triplet.trainer.train_epoch,
+              triplet_selector=RandomNegativeTripletSelector):
         margin1 = 1.0
         triplet_train_config = [
-            {'triplet-selector': RandomNegativeTripletSelector,
+            {'triplet-selector': triplet_selector,
              'learning-rate': learning_rate,
              'margin': margin1,
              'nepochs': num_subepochs

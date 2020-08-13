@@ -3,10 +3,12 @@ import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset
 from tripletnet.classifiers.augmented_classifier import ClassifierConvNet, AugmentedClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from tripletnet.losses import CorrelationMatrixLoss, DistanceCorrelationLoss
 from siamese_triplet.losses import OnlineTripletLoss
+from siamese_triplet.utils import HardestNegativeTripletSelector
 from tripletnet.networks import TripletNetwork
 from torchvision import transforms
 from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet
@@ -16,16 +18,19 @@ from tripletnet.datahandler import BasicTorchDataset
 from torch.utils.data.sampler import BatchSampler
 from sklearn.model_selection import cross_validate
 
+np.random.seed(0)
+torch.manual_seed(0)
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
-def loadRPDBCSData(nsigs=100000):
-    data_dir = 'data/data_classified_v6'
+
+def loadRPDBCSData(data_dir, nsigs=100000):
+    # data_dir = 'data/data_classified_v6'
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800)
     targets, targets_name = D.getMulticlassTargets()
-    # print(targets_name)
-    # D.remove(((targets[targets >= 2]).index).values)
     D.normalize(37.28941975)
-    D.shuffle()
+    # D.shuffle()
 
     Feats = D.asMatrix()[:, :6100]
     targets, targets_name = D.getMulticlassTargets()
@@ -51,7 +56,7 @@ def loadMNIST():
     return dataset, dataset_test
 
 
-def main(save_file, D):
+def main(D):
     from sklearn.model_selection import cross_validate
     from sklearn.pipeline import Pipeline
 
@@ -62,55 +67,25 @@ def main(save_file, D):
     X, Y = D
 
     net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda(),
-                         learning_rate=1e-3, num_subepochs=5, batch_size=25, num_epochs=5,
-                         custom_loss=OnlineTripletLoss)
-    # net = TripletNetwork.load('/tmp/tmp.pt', net_arch=lmelloEmbeddingNet(8).cuda(), map_location='cuda:0')
-    # net.dont_train=True
-    ppp = Pipeline([('embedder', net),
-                    ('classifier', RandomForestClassifier(100))])
+                         learning_rate=1e-3, num_subepochs=3, batch_size=25, num_epochs=3,
+                         custom_loss=OnlineTripletLoss,
+                         triplet_selector=HardestNegativeTripletSelector
+                         )
+    classifier = Pipeline([('embedder', net),
+                           ('classifier', KNeighborsClassifier(1))])
 
-    sksampler = ShuffleSplit(1, test_size=0.2, random_state=123)
-    scores = cross_validate(ppp, dataset, Y, scoring=['accuracy', 'f1_macro'], cv=sksampler)
-    print(scores)
-    net.save(save_file)
-
-
-def main2(save_file, D, Dtest=None, end2end=True):
-    metrics = {'Accuracy': accuracy_score,
-               'f-macro': lambda x, y: f1_score(x, y, average='macro'),
-               'prec-macro': lambda x, y: precision_score(x, y, average='macro'),
-               'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
-
-    nclasses = len(np.bincount(D[1]))
-    if(end2end):
-        encoder_net = lmelloEmbeddingNet(8)
-    else:
-        fpath = '/home/lhsmello/ufes/doutorado/TripletNet-on-ESP/saved_models/lossanalysis/12-05-2020_32outs.pt'
-        encoder_net = EmbeddingWrapper.loadModel(fpath).embedding_net
-        for p in encoder_net.parameters():
-            p.requires_grad = False
-    net = ClassifierConvNet(nclasses, encoder_net=encoder_net)
-
-    X, Y = D
-    net.fit(X, Y)
-
-    """Test"""
-    if(Dtest is not None):
-        Xtest, Ytest = Dtest
-        preds = net.predict(Xtest)
-        stats = {name: [m(Ytest, preds)] for name, m in metrics.items()}
-        df = pd.DataFrame(stats)
-        print("")
-        print(df)
+    classifier.fit(X, Y)
+    Ypred = classifier.predict(X)
+    for mname, m in metrics.items():
+        score = m(Y, Ypred)
+        print("%s: %f%%" % (mname, score*100))
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--outfile', type=str, required=True)
+    parser.add_argument('-i', '--input', type=str, required=True, help="input directory of dataset")
     args = parser.parse_args()
 
-    D = loadRPDBCSData(1000)
-    # D = loadMNIST()
-    main(args.outfile, D)
-    # main2(args.outfile, Dtrain, Dtest, end2end=True)
+    D = loadRPDBCSData(args.input)
+    main(D)
