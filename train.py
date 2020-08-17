@@ -17,9 +17,14 @@ import pandas as pd
 from tripletnet.datahandler import BasicTorchDataset
 from torch.utils.data.sampler import BatchSampler
 from sklearn.model_selection import cross_validate
+import random
 
-np.random.seed(0)
-torch.manual_seed(0)
+SEED = 123
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 
@@ -66,8 +71,8 @@ def main(D):
                'recall-macro': lambda x, y: recall_score(x, y, average='macro')}
     X, Y = D
 
-    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cuda(),
-                         learning_rate=1e-3, num_subepochs=3, batch_size=25, num_epochs=3,
+    net = TripletNetwork(net_arch=lmelloEmbeddingNet(8).cpu(),
+                         learning_rate=1e-3, num_subepochs=2, batch_size=25, num_epochs=0,
                          custom_loss=OnlineTripletLoss,
                          triplet_selector=HardestNegativeTripletSelector
                          )

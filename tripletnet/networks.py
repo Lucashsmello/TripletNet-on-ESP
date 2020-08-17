@@ -32,6 +32,11 @@ class EmbeddingNetMNIST(nn.Module):
         return x
 
 
+def init_all(model, init_func, *params, **kwargs):
+    for p in model.parameters():
+        init_func(p, *params, **kwargs)
+
+
 class TripletNetwork(BaseEstimator, TransformerMixin):
     def __init__(self, net_arch,
                  learning_rate=1e-3, num_subepochs=10, num_epochs=10, batch_size=32, dont_train=False,
@@ -39,6 +44,7 @@ class TripletNetwork(BaseEstimator, TransformerMixin):
                  custom_loss=OnlineTripletLoss,
                  triplet_selector=RandomNegativeTripletSelector):
         self.net_arch = net_arch
+        init_all(self.net_arch, torch.nn.init.constant_, 1.)
         self.learning_rate = learning_rate
         self.num_subepochs = num_subepochs
         self.num_epochs = num_epochs
