@@ -8,7 +8,11 @@ from .datahandler import BasicTorchDataset
 from siamese_triplet.utils import RandomNegativeTripletSelector, HardestNegativeTripletSelector, SemihardNegativeTripletSelector, HardNegativeTripletSelector
 from sklearn.base import BaseEstimator, TransformerMixin
 from skorch import NeuralNet
+from skorch.dataset import uses_placeholder_y
 import skorch
+from sklearn.cluster import KMeans
+from skorch.dataset import unpack_data
+from skorch.utils import to_tensor
 
 
 class EmbeddingNetMNIST(nn.Module):
@@ -83,22 +87,80 @@ class TripletNetwork(NeuralNetTransformer):
         net.load_params(fpath)
         return net
 
-    def load_params(self, f_params=None, f_optimizer=None, f_history=None,
-                    checkpoint=None):
-        def _get_state_dict(f):
-            map_location = skorch.utils.get_map_location(self.device)
-            self.device = self._check_device(self.device, map_location)
-            return torch.load(f, map_location=map_location)
+    # def load_params(self, f_params=None, f_optimizer=None, f_history=None,
+    #                 checkpoint=None):
+    #     def _get_state_dict(f):
+    #         map_location = skorch.utils.get_map_location(self.device)
+    #         self.device = self._check_device(self.device, map_location)
+    #         return torch.load(f, map_location=map_location)
 
-        if f_params is not None:
-            msg = (
-                "Cannot load parameters of an un-initialized model. "
-                "Please initialize first by calling .initialize() "
-                "or by fitting the model with .fit(...).")
-            self.check_is_fitted(msg=msg)
-            state_dict = _get_state_dict(f_params)['state_dict']
-            self.module_.load_state_dict(state_dict)
-        super().load_params(None, f_optimizer, f_history, checkpoint)
+    #     if f_params is not None:
+    #         msg = (
+    #             "Cannot load parameters of an un-initialized model. "
+    #             "Please initialize first by calling .initialize() "
+    #             "or by fitting the model with .fit(...).")
+    #         self.check_is_fitted(msg=msg)
+    #         state_dict = _get_state_dict(f_params)['state_dict']
+    #         self.module_.load_state_dict(state_dict)
+    #     super().load_params(None, f_optimizer, f_history, checkpoint)
+
+
+class TripletEnsembleNetwork(TripletNetwork):
+    class SubDataset(torch.utils.data.Subset):
+        def __init__(self, dataset, line_idxs):
+            super().__init__(dataset, line_idxs)
+            if(hasattr(dataset, 'y')):
+                self.targets = dataset.y
+            else:
+                self.targets = dataset.targets
+            self.targets = self.targets[line_idxs]
+
+    def __init__(self, module, k, *args, criterion=TripletNetwork.OnlineTripletLossWrapper, **kwargs):
+        super().__init__(module,
+                         *args,
+                         criterion=criterion,
+                         **kwargs)
+        self.k = k
+
+    def run_single_epoch(self, dataset, training, prefix, step_fn, **fit_params):
+        is_placeholder_y = uses_placeholder_y(dataset)
+
+        X, Y = [], []
+
+        for data in self.get_iterator(dataset, training=training):
+            Xi, yi = unpack_data(data)
+            yi_res = yi if not is_placeholder_y else None
+            with torch.no_grad():
+                X.append(self.transform(Xi))
+            Y.append(yi)
+
+        X = np.concatenate(X)
+        Y = np.concatenate(Y)
+
+        kmeans = KMeans(n_clusters=self.k).fit(X)
+        idxs = [np.where(kmeans.labels_ == i)[0] for i in range(self.k)]
+        m = X.shape[-1]//self.k
+        for i, idx in enumerate(idxs):
+            if(len(idx) < 3):
+                continue
+            self.feats_idxs = list(range(i*m, (i+1)*m))
+            subdataset = TripletEnsembleNetwork.SubDataset(dataset, idx)
+            try:
+                super().run_single_epoch(subdataset, training, prefix, step_fn, **fit_params)
+            except:
+                import sys
+                print("Unexpected error:", sys.exc_info()[0])
+
+    def get_loss(self, y_pred, y_true, X=None, training=False):
+        y_true = to_tensor(y_true, device=self.device)
+        return self.criterion_(y_pred[:, self.feats_idxs], y_true)
+
+    @staticmethod
+    def load(fpath: str, module, **kwargs) -> 'TripletEnsembleNetwork':
+        net = TripletEnsembleNetwork(module, k=0, **kwargs)
+        net.initialize()
+        net.load_params(fpath)
+        return net
 
 
 class lmelloEmbeddingNet(nn.Module):

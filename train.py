@@ -1,15 +1,17 @@
+import pickle
 import torch
 from torch import nn
 import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import cross_validate
 from sklearn.pipeline import Pipeline
 from tripletnet.losses import CorrelationMatrixLoss, DistanceCorrelationLoss
 from siamese_triplet.losses import OnlineTripletLoss
-from tripletnet.networks import TripletNetwork
+from tripletnet.networks import TripletNetwork, TripletEnsembleNetwork
 from tripletnet.datahandler import BalancedDataLoader
 from torchvision import transforms
 from tripletnet.networks import EmbeddingNetMNIST, lmelloEmbeddingNet2, lmelloEmbeddingNet
@@ -18,16 +20,16 @@ import pandas as pd
 from tripletnet.datahandler import BasicTorchDataset
 from time import time
 
+np.random.seed(1)
+torch.manual_seed(1)
 
-def loadRPDBCSData(nsigs=100000):
-    data_dir = 'data/data_classified_v6'
+
+def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     targets, targets_name = D.getMulticlassTargets()
-    # print(targets_name)
     # D.remove(((targets[targets >= 2]).index).values)
-    D.normalize(37.28941975)
-    D.shuffle()
+    # D.normalize(37.28941975)
 
     Feats = D.asMatrix()[:, :6100]
     targets, targets_name = D.getMulticlassTargets()
@@ -40,10 +42,10 @@ def loadMNIST():
 
     mean, std = 0.1307, 0.3081
     dataset_train = MNIST('/tmp', train=True, download=True,
-                    transform=transforms.Compose([
-                        transforms.ToTensor(),
-                        transforms.Normalize((mean,), (std,))
-                    ]))
+                          transform=transforms.Compose([
+                              transforms.ToTensor(),
+                              transforms.Normalize((mean,), (std,))
+                          ]))
     dataset_test = MNIST('/tmp', train=False, download=True,
                          transform=transforms.Compose([
                              transforms.ToTensor(),
@@ -53,31 +55,81 @@ def loadMNIST():
     return dataset_train, dataset_test
 
 
-def main(save_file, D):
+def main(save_file, D, method="orig"):
     X, Y = D
-    tripletnet = TripletNetwork(lmelloEmbeddingNet, margin_decay_delay=10,
-                                optimizer=torch.optim.Adam, optimizer__lr=1e-3, optimizer__weight_decay=1e-4,
-                                module__num_outputs=8, device='cuda',
-                                train_split=None,
-                                batch_size=125, max_epochs=30,
-                                criterion=TripletNetwork.OnlineTripletLossWrapper,
-                                iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True)
+    if(method == 'orig'):
+        tripletnet = TripletNetwork(lmelloEmbeddingNet, margin_decay_delay=0,
+                                    optimizer=torch.optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
+                                    module__num_outputs=16, device='cuda',
+                                    train_split=None,
+                                    batch_size=125, max_epochs=100,
+                                    criterion=TripletNetwork.OnlineTripletLossWrapper,
+                                    iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True)
+    else:
+        tripletnet = TripletEnsembleNetwork(lmelloEmbeddingNet, k=4,
+                                            optimizer=torch.optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
+                                            module__num_outputs=32, device='cuda',
+                                            train_split=None,
+                                            batch_size=125, max_epochs=100,
+                                            criterion=TripletNetwork.OnlineTripletLossWrapper,
+                                            iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True)
 
     classifier = Pipeline([('encodding', tripletnet),
                            ('classifier', RandomForestClassifier(100))])
 
     # classifier.fit(X,Y)
-    sksampler = StratifiedKFold(5, shuffle=True)
-    scores = cross_validate(classifier, X, Y, scoring=['accuracy', 'f1_macro'], cv=sksampler)
-    print(scores)
+    # sksampler = StratifiedKFold(10, shuffle=True, random_state=1)
+    sksampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
+    scoring = ['accuracy', 'f1_macro']
+    scores = cross_validate(classifier, X, Y, scoring=scoring, cv=sksampler, return_estimator=True)
+    with open(save_file+"-results.csv", 'w') as f:
+        for sc in scoring:
+            f.write(sc+";")
+            f.write(";".join([str(s) for s in scores["test_"+sc]])+'\n')
+    for i, trained_model in enumerate(scores['estimator']):
+        trained_model = trained_model['encodding']
+        with open("%s-%d.pkl" % (save_file, i), 'wb') as f:
+            pickle.dump(trained_model, f)
+        # trained_model.save_params()
+
+
+def main2(save_file, D, trained_model=None):
+    X, Y = D
+    n = 4500
+    if(trained_model is None):
+        tripletnet = TripletNetwork(lmelloEmbeddingNet, margin_decay_delay=0,
+                                    optimizer=torch.optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
+                                    module__num_outputs=8, device='cuda',
+                                    train_split=None,
+                                    batch_size=125, max_epochs=1,
+                                    criterion=TripletNetwork.OnlineTripletLossWrapper,
+                                    iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True)
+
+    else:
+        tripletnet = TripletNetwork.load(trained_model, module=lmelloEmbeddingNet,
+                                         module__num_outputs=8, device='cpu')
+        tripletnet.dont_train = True
+
+    classifier = Pipeline([('encodding', tripletnet),
+                           ('classifier', KNeighborsClassifier(1))])
+    classifier.fit(X[:n], Y[:n])
+    preds = classifier.predict(X[n:])
+    print("Accuracy:", accuracy_score(Y[n:], preds))
+    print("fmeasure:", f1_score(Y[n:], preds, average='macro'))
+
+    if(save_file is not None):
+        tripletnet.save_params(save_file)
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--outfile', type=str, required=True)
+    parser.add_argument('-i', '--inputdata', type=str, required=True)
+    parser.add_argument('--model', type=str, required=False, help='pre-trained model in pkl')
+    parser.add_argument('-o', '--outfile', type=str, required=False)
+    # parser.add_argument('--method', type=str, choices=['orig', 'divconquer'], default='orig')
     args = parser.parse_args()
 
-    D = loadRPDBCSData()
+    D = loadRPDBCSData(args.inputdata)
     # D = loadMNIST()
-    main(args.outfile, D)
+    main2(args.outfile, D, trained_model=args.model)
