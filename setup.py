@@ -2,7 +2,7 @@ from setuptools import setup
 
 modules = ['networks', 'datahandler', 'trainer']
 setup(name='tripletnet-classifier',
-      version='2.0',
+      version='2.1',
       description='Deep Triplet Network',
       url='https://github.com/Lucashsmello/TripletNet-on-ESP',
       author='Lucas Mello',
