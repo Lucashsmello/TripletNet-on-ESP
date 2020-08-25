@@ -38,13 +38,23 @@ class MyBalancedBatchSampler(BalancedBatchSampler):
 class BalancedDataLoader(torch.utils.data.DataLoader):
     def __init__(self, dataset, batch_size=1, num_workers=0, collate_fn=None,
                  pin_memory=False, worker_init_fn=None):
-        if(hasattr(dataset, 'y')):
-            targets = dataset.y
+        if(isinstance(dataset, torch.utils.data.Subset)):
+            targets = BalancedDataLoader.getTargets(dataset.dataset)
+            targets = targets[dataset.indices]
         else:
-            targets = dataset.targets
+            targets = BalancedDataLoader.getTargets(dataset)
+
         if(torch.is_tensor(targets)):
             targets = targets.cpu().numpy()
         nclasses = len(set(targets))
         sampler = MyBalancedBatchSampler(targets, nclasses, batch_size//nclasses)
         super().__init__(dataset, num_workers=num_workers, batch_sampler=sampler,
                          collate_fn=collate_fn, pin_memory=pin_memory, worker_init_fn=worker_init_fn)
+
+    @staticmethod
+    def getTargets(dataset):
+        if(hasattr(dataset, 'y')):
+            targets = dataset.y
+        else:
+            targets = dataset.targets
+        return targets
