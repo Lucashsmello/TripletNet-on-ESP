@@ -1,47 +1,48 @@
-from rpdbcs.datahandler.dataset import readDataset, getICTAI2016FeaturesNames, getRPDBCS2FeaturesNames
-from sklearn.model_selection import cross_validate, cross_val_predict, GridSearchCV, KFold, StratifiedKFold, train_test_split, StratifiedShuffleSplit
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
-import sklearn
-from sklearn.neighbors import KNeighborsClassifier
+import torch
+from torch import nn
+import torch.optim as optim
+from rpdbcs.datahandler.dataset import readDataset, getICTAI2016FeaturesNames
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
-from sklearn import tree
-from sklearn.decomposition import PCA
-from pandas import DataFrame
-import numpy
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit, GroupKFold, GridSearchCV
+from sklearn.model_selection import cross_validate
+from rpdbcs.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
-from tripletnet.feature_selector import ManualFeaturesSelector
-from tripletnet.classifiers.augmented_classifier import AugmentedClassifier, ClassifierConvNet, ClassifierConvNet2, RESET_FOLD_ID
-from sklearn.metrics import make_scorer
-import time
-import warnings
-warnings.simplefilter(action='once', category=FutureWarning)
-warnings.simplefilter(action='once', category=DeprecationWarning)
-warnings.filterwarnings('once')
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+import skorch
+from tripletnet.networks import TripletNetwork, TripletEnsembleNetwork
+from tripletnet.datahandler import BalancedDataLoader
+from torchvision import transforms
+from tripletnet.networks import lmelloEmbeddingNet
+import numpy as np
+import pandas as pd
+from tripletnet.datahandler import BasicTorchDataset
+from tripletnet.callbacks import LoadEndState
+import itertools
+from tempfile import mkdtemp
+from shutil import rmtree
 
-RANDOM_STATE = 0
+RANDOM_STATE = 2
+np.random.seed(RANDOM_STATE)
+torch.cuda.manual_seed(RANDOM_STATE)
+torch.manual_seed(RANDOM_STATE)
+# torch.backends.cudnn.benchmark = False
+# torch.backends.cudnn.deterministic = True
 
 
-class testclf:
-    def __init__(self, myparam=0):
-        self.myparam = myparam
+def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
+    D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
+                    remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
+    targets, _ = D.getMulticlassTargets()
+    D.remove(np.where(targets == 3)[0])
+    print("Dataset length", len(D))
+    # D.normalize(37.28941975)
+    # D.shuffle()
 
-    def fit(self, X, y):
-        print(">>>trained with %d samples and myparam=%d." % (len(y), self.myparam))
-        return self
-
-    def get_params(self, deep=True):
-        return {'myparam': self.myparam}
-
-    def set_params(self, **parameters):
-        for parameter, value in parameters.items():
-            if(parameter == 'myparam'):
-                self.myparam = value
-        return self
-
-    def predict(self, X):
-        return numpy.random.randint(0, 4, size=len(X))
+    return D
 
 
 def getBaseClassifiers(pre_pipeline=None):
@@ -52,24 +53,24 @@ def getBaseClassifiers(pre_pipeline=None):
     sampler = StratifiedShuffleSplit(n_splits=1, test_size=1.0/9, random_state=RANDOM_STATE)
     # sampler = StratifiedKFold(9, shuffle=False)
 
-    svm = sklearn.svm.SVC(kernel='rbf', random_state=RANDOM_STATE)
-    svm = GridSearchCV(svm,
-                       {'C': [2**5, 2**7, 2**13, 2**15],
-                        'gamma': [2, 8]},
-                       scoring=scorer, cv=sampler, n_jobs=6)
+    # svm = sklearn.svm.SVC(kernel='rbf', random_state=RANDOM_STATE)
+    # svm = GridSearchCV(svm,
+    #                    {'C': [2**5, 2**7, 2**13, 2**15],
+    #                     'gamma': [2, 8]},
+    #                    scoring=scorer, cv=sampler, n_jobs=6)
     knn = KNeighborsClassifier()
     knn = GridSearchCV(knn,
                        {'n_neighbors': [1, 3, 5, 7, 9, 11, 13, 15]},
                        scoring=scorer, cv=sampler, n_jobs=6)
     rf = RandomForestClassifier(random_state=RANDOM_STATE)
-    rf = GridSearchCV(rf, {'n_estimators': [100, 1000],
+    rf = GridSearchCV(rf, {'n_estimators': [100, 200],
                            'max_features': [1, 2, 3, 4, 5]},
                       #    'min_impurity_decrease': [1e-4, 1e-3]},
                       scoring=scorer, cv=sampler, n_jobs=6)
-    dtree = tree.DecisionTreeClassifier(random_state=RANDOM_STATE)
+    dtree = DecisionTreeClassifier(random_state=RANDOM_STATE)
     dtree = GridSearchCV(dtree,
                          {
-                             'max_leaf_nodes': [10, 100, 1000],
+                             'max_leaf_nodes': [10, 100],
                              'max_depth': [3, 6, 9, 12, 15]
                          }
                          )
@@ -81,11 +82,11 @@ def getBaseClassifiers(pre_pipeline=None):
                        scoring=scorer, cv=sampler, n_jobs=6)
 
     # clfs.append((svm, "SVM"))
-    clfs.append((knn, "knn"))
-    clfs.append((dtree, "DT"))
-    clfs.append((rf, "RF"))
-    clfs.append((GaussianNB(), "NB"))
-    clfs.append((qda, "QDA"))
+    clfs.append(("knn", knn))
+    clfs.append(("DT", dtree))
+    clfs.append(("RF", rf))
+    clfs.append(("NB", GaussianNB()))
+    clfs.append(("QDA", qda))
     # ttt = testclf()
     # ttt = GridSearchCV(ttt, {'myparam': [1, 2, 3]}, scoring=scorer, cv=sampler)
     # clfs.append((ttt, "testclf"))
@@ -98,145 +99,112 @@ def getBaseClassifiers(pre_pipeline=None):
     return clfs
 
 
-def getClassifiers(base_clfs, selectedfeats, use_normalization=False):
-    ret = []
-    for clf in base_clfs:
-        if(use_normalization):
-            c = Pipeline([
-                ('feature_selection', ManualFeaturesSelector(selectedfeats)),
-                ('scale', StandardScaler()),
-                ('classification', clf[0])])
-        else:
-            c = Pipeline([
-                ('feature_selection', ManualFeaturesSelector(selectedfeats)),
-                ('classification', clf[0])])
-        ret.append((c, clf[1]))  # FIXME: make a new name base on the manual feature selection
-    return ret
+DEEP_CACHE_DIR = mkdtemp()
 
 
-def getDeepClassifiers(num_predefined_feats):
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=1.0/9, random_state=RANDOM_STATE)
-    scorer = 'f1_macro'
-    clfs = []
-    # clfs.append((ClassifierConvNet(base_dir="saved_models/ClassifierConvNet", nclasses=5), "ConvNet"))
-    baseclfs_std = getBaseClassifiers(('scale', StandardScaler()))
-    baseclfs = getBaseClassifiers()
-    for c, cname in baseclfs:
-        augclf = AugmentedClassifier(c, num_predefined_feats, "saved_models/extractor_net", num_subepochs=10, batch_size=4)
-        # augclf = GridSearchCV(augclf, {
-        #     'learning_rate': [1e-4, 1e-3, 1e-2],
-        #     'num_subepochs': [20, 30, 40],
-        #     'batch_size': [4, 8, 16]
-        # }, scoring=scorer, cv=sampler)
-        clfs.append((augclf, "Aug-%s" % cname))
+def getDeepTransformers():
+    global DEEP_CACHE_DIR
 
-    # for c, cname in baseclfs_std:
-    #     augclf2 = ClassifierConvNet2(
-    #         base_dir="saved_models/ClassifierConvNet", nclasses=5, base_classif=c)
-    #     augclf2 = GridSearchCV(augclf2, {
-    #         'learning_rate': [1e-4, 1e-3, 1e-2],
-    #         'num_steps_decay': [20, 30, 40],
-    #         'batch_size': [128, 256, 512]
-    #     }, scoring=scorer, cv=sampler)
-    #     clfs.append((augclf2, "ConvNet-%s" % cname))
-    return clfs
-
-
-ROOT_DIR = '/home/lhsmello/ufes/NINFA/lmello_RPDBCS3/data'
-D = readDataset(ROOT_DIR+'/data_classified_v6/freq.csv', ROOT_DIR+'/data_classified_v6/labels.csv',
-                remove_first=100, nsigs=20000, npoints=10800)
-targets, _ = D.getMulticlassTargets()
-D.remove((targets[targets == 0].index).values)
-D.normalize(f_hz="min")
-# D.shuffle()
-targets, targets_name = D.getMulticlassTargets()
-print(targets_name)
+    checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
+    parameters = {
+        'callbacks': [checkpoint_callback, LoadEndState(checkpoint_callback)],
+        'max_epochs': 100,
+        'batch_size': 125,
+        'margin_decay_delay': 50,
+        'margin_decay_value': 0.5}
+    deep_transf = []
+    tripletnet = TripletNetwork(lmelloEmbeddingNet,
+                                optimizer=optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
+                                module__num_outputs=8, device='cuda',
+                                train_split=None,
+                                criterion=TripletNetwork.OnlineTripletLossWrapper,
+                                iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True,
+                                **parameters
+                                )
+    # tripletnet = TripletEnsembleNetwork(lmelloEmbeddingNet, k=4,
+    #                                     optimizer=optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
+    #                                     module__num_outputs=32, device='cuda',
+    #                                     train_split=None,
+    #                                     criterion=TripletNetwork.OnlineTripletLossWrapper,
+    #                                     iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True,
+    #                                     **parameters)
+    deep_transf.append(("tripletnet", tripletnet))
+    return deep_transf
 
 
-rpdbcs2feats_names = getRPDBCS2FeaturesNames()
-ictaifeats_names = getICTAI2016FeaturesNames()
-# rpdbcs2feats = D.asDataFrame()[rpdbcs2feats_names].values
-# ictaifeats = D.asDataFrame()[ictaifeats_names].values
-allfeats_names = list(dict.fromkeys(rpdbcs2feats_names+ictaifeats_names))
-allfeats = D.asDataFrame()[allfeats_names].values
-Feats = numpy.concatenate((allfeats, D.asMatrix()), axis=1)
+def main(save_file, D, method="orig"):
+    global DEEP_CACHE_DIR
+
+    X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
+    Y, _ = D.getMulticlassTargets()
+    Y, Ynames = pd.factorize(Y)
+    group_ids = D.groupids('test')
+
+    transformers = getDeepTransformers()
+    base_classifiers = getBaseClassifiers()
+
+    sksampler = StratifiedGroupKFold(5, shuffle=False)
+    # sksampler = StratifiedKFold(10, shuffle=False)
+    # sksampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
+    cachedir = mkdtemp()
+
+    scoring = ['accuracy', 'f1_macro']
+    Results = {}
+    for transf, base_classif in itertools.product(transformers, base_classifiers):
+        transf_name, transf = transf
+        classif_name, base_classif = base_classif
+        classifier = Pipeline([('encodding', transf),
+                               ('classifier', base_classif)],
+                              memory=cachedir)
+        scores = cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
+                                cv=sksampler, return_estimator=False)
+        Results['%s + %s' % (transf_name, classif_name)] = scores
+
+    ictaifeats_names = getICTAI2016FeaturesNames()
+    features = D.asDataFrame()[ictaifeats_names].values
+    for classif_name, base_classif in base_classifiers:
+        scores = cross_validate(base_classif, features, Y, groups=group_ids,
+                                scoring=scoring, cv=sksampler)
+        Results[classif_name] = scores
+    # classifier = GridSearchCV(classifier,
+    #                           {'encodding__optimizer__lr': [1e-4]}, scoring='f1_macro',
+    #                           cv=StratifiedShuffleSplit(n_splits=1, test_size=1.0/9, random_state=RANDOM_STATE))
+
+    results_asmatrix = []
+    for classif_name, result in Results.items():
+        print("===%s===" % classif_name)
+        for rname, rs in result.items():
+            if(rname.startswith('test_') or 'time' in rname):
+                if(rname.startswith('test_')):
+                    metric_name = rname.split('_', 1)[-1]
+                else:
+                    metric_name = rname
+                print("%s: %f" % (metric_name, rs.mean()))
+                for i, r in enumerate(rs):
+                    results_asmatrix.append((classif_name, metric_name, i+1, r))
+
+    if(save_file is not None):
+        df = pd.DataFrame(results_asmatrix, columns=['classifier name', 'metric name', 'fold id', 'value'])
+        df.to_csv(save_file, index=False)
+
+        # for i, trained_model in enumerate(scores['estimator']):
+        #     trained_model['encodding'].save_params("%s-%d.pt" % (save_file, i))
+        # trained_model = trained_model['encodding']
+        # with open("%s-%d.pkl" % (save_file, i), 'wb') as f:
+        #     pickle.dump(trained_model, f)
+    rmtree(cachedir)
+    rmtree(DEEP_CACHE_DIR)
 
 
-rpdbcs2feats_sel = [allfeats_names.index(fname) for fname in rpdbcs2feats_names]
-ictaifeats_sel = [allfeats_names.index(fname) for fname in ictaifeats_names]
-# print(len(ictaifeats_sel))
-allfeats_sel = list(range(len(allfeats_names)))
-frequencyfeats_sel = list(range(len(allfeats_names), len(allfeats_names) + 6100))  # 5076
-clfs = []
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-i', '--inputdata', type=str, required=True)
+    # parser.add_argument('--model', type=str, required=False, help='pre-trained model in pkl')
+    parser.add_argument('-o', '--outfile', type=str, required=False)
+    parser.add_argument('--method', type=str, choices=['orig', 'divconquer'], default='orig')
+    args = parser.parse_args()
 
-# deep_clfs_feats = ictaifeats_sel+frequencyfeats_sel
-deep_clfs_feats = frequencyfeats_sel
-deep_clfs = getClassifiers(getDeepClassifiers(len(deep_clfs_feats)-len(frequencyfeats_sel)),
-                           deep_clfs_feats,
-                           use_normalization=False)
-clfs += deep_clfs
-clfs += getClassifiers(getBaseClassifiers(), ictaifeats_sel, use_normalization=True)
-
-
-# metrics = {"F-%d" % i: make_scorer(f1_score, labels=[i], average='macro') for i in range(5)}
-"""
-Valid Options:
-    ['accuracy', 'adjusted_mutual_info_score', 'adjusted_rand_score', 'average_precision', 'balanced_accuracy', 'brier_score_loss', 'completeness_score', 'explained_variance', 'f1', 'f1_macro', 'f1_micro', 'f1_samples', 'f1_weighted', 'fowlkes_mallows_score', 'homogeneity_score', 'jaccard', 'jaccard_macro', 'jaccard_micro', 'jaccard_samples', 'jaccard_weighted', 'max_error',
-        'mutual_info_score', 'neg_log_loss', 'neg_mean_absolute_error', 'neg_mean_squared_error', 'neg_mean_squared_log_error', 'neg_median_absolute_error', 'normalized_mutual_info_score', 'precision', 'precision_macro', 'precision_micro', 'precision_samples', 'precision_weighted', 'r2', 'recall', 'recall_macro', 'recall_micro', 'recall_samples', 'recall_weighted', 'roc_auc', 'v_measure_score']
-"""
-metrics = ['precision_macro', 'recall_macro', 'f1_macro',
-           'f1_micro', 'accuracy']
-metrics = {m: m for m in metrics}
-results_test = {m: [] for m in metrics}
-results_test_folds = {"f1_macro": [], "clf_name": []}
-results_train = {m: [] for m in metrics}
-results_test_std = {m: [] for m in metrics}
-# y_diff = {}
-
-sampler = StratifiedKFold(10, shuffle=False)
-for clf, name in clfs:
-    t1 = time.time()
-    RESET_FOLD_ID()
-    scores = cross_validate(clf, Feats, targets, scoring=metrics,
-                            cv=sampler, return_train_score=True, return_estimator=False)
-    t2 = time.time()
-    print("----------%s-----------(%.2fseconds)" % (name, t2-t1))
-
-    for m in metrics:
-        results_test[m].append(scores["test_%s" % m].mean())
-        results_train[m].append(scores["train_%s" % m].mean())
-        results_test_std[m].append(scores["test_%s" % m].std())
-    for sc in scores["test_f1_macro"]:
-        results_test_folds["f1_macro"].append(sc)
-        results_test_folds["clf_name"].append(name)
-    '''
-    y_pred = cross_val_predict(clf, Feats, targets, cv=sampler)
-    print('>>>', len(y_pred))
-    for m_name, metric in metrics.items():
-        if('macro' in m_name):
-            results_test[m_name].append(metric(targets, y_pred, average='macro'))
-        elif('micro' in m_name):
-            results_test[m_name].append(metric(targets, y_pred, average='micro'))
-        else:
-            results_test[m_name].append(metric(targets, y_pred))
-    y_diff[name] = y_pred == targets
-    '''
-print("Cross validation finished")
-
-df_test = DataFrame(results_test, index=list(zip(*clfs))[1])
-df_std = DataFrame(results_test_std, index=list(zip(*clfs))[1])
-df_train = DataFrame(results_train, index=list(zip(*clfs))[1])
-df_test_folds = DataFrame(results_test_folds)
-print(df_test)
-# print(df_std)
-print(df_train)
-df_test.to_csv('results/performance_test.csv')
-df_train.to_csv('results/performance_train.csv')
-df_std.to_csv('results/performance_test_std.csv')
-df_test_folds.to_csv('results/performance_test_folds.csv')
-
-'''
-df_preds = DataFrame(y_diff)
-df_preds['Signal id'] = D.asDataFrame()['Signal id']
-df_preds.to_csv('results/predictions.csv', sep=';')
-'''
+    D = loadRPDBCSData(args.inputdata)
+    main(args.outfile, D, method=args.method)
+    # main2(args.outfile, D, trained_model=args.model)

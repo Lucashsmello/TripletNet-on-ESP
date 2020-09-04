@@ -175,7 +175,8 @@ class lmelloEmbeddingNet(nn.Module):
             nn.MaxPool1d(4, stride=4),
             nn.Conv1d(32, 64, 5), nn.LeakyReLU(negative_slope=0.05),
             nn.Dropout(p=0.2),
-            nn.MaxPool1d(4, stride=4)
+            nn.MaxPool1d(4, stride=4),
+            nn.Flatten()
         )
 
         self.fc = nn.Sequential(nn.Linear(64 * 94, 192),
@@ -185,7 +186,6 @@ class lmelloEmbeddingNet(nn.Module):
 
     def forward(self, x):
         output = self.convnet(x)
-        output = output.view(output.size()[0], -1)  # flatten
         output = self.fc(output)
         return output
 
@@ -216,11 +216,11 @@ class lmelloEmbeddingNet2(lmelloEmbeddingNet):
     def __init__(self, num_outputs, num_inputs_channels=1):
         super().__init__(num_outputs, num_inputs_channels)
         self.convnet = nn.Sequential(
-            nn.Conv1d(num_inputs_channels, 16, 5), nn.ReLU(), nn.Dropout(p=0.2),
+            nn.Conv1d(num_inputs_channels, 16, 5), nn.ReLU(),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(16, 32, 5), nn.ReLU(), nn.Dropout(p=0.2),
+            nn.Conv1d(16, 32, 5), nn.ReLU(),
             nn.MaxPool1d(4, stride=4),
-            nn.Conv1d(32, 64, 5), nn.ReLU(), nn.Dropout(p=0.2),
+            nn.Conv1d(32, 64, 5), nn.ReLU(),
             nn.MaxPool1d(4, stride=4),
             nn.Flatten()
         )
