@@ -25,7 +25,7 @@ import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
 
-RANDOM_STATE = 2
+RANDOM_STATE = 0
 np.random.seed(RANDOM_STATE)
 torch.cuda.manual_seed(RANDOM_STATE)
 torch.manual_seed(RANDOM_STATE)
@@ -39,8 +39,8 @@ def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
     targets, _ = D.getMulticlassTargets()
     D.remove(np.where(targets == 3)[0])
     print("Dataset length", len(D))
-    # D.normalize(37.28941975)
-    # D.shuffle()
+    D.normalize(37.28941975)
+    D.shuffle()
 
     return D
 
@@ -51,21 +51,13 @@ def getBaseClassifiers(pre_pipeline=None):
     clfs = []
     scorer = 'f1_macro'
     sampler = StratifiedShuffleSplit(n_splits=1, test_size=1.0/9, random_state=RANDOM_STATE)
-    # sampler = StratifiedKFold(9, shuffle=False)
-
-    # svm = sklearn.svm.SVC(kernel='rbf', random_state=RANDOM_STATE)
-    # svm = GridSearchCV(svm,
-    #                    {'C': [2**5, 2**7, 2**13, 2**15],
-    #                     'gamma': [2, 8]},
-    #                    scoring=scorer, cv=sampler, n_jobs=6)
     knn = KNeighborsClassifier()
     knn = GridSearchCV(knn,
                        {'n_neighbors': [1, 3, 5, 7, 9, 11, 13, 15]},
                        scoring=scorer, cv=sampler, n_jobs=6)
     rf = RandomForestClassifier(random_state=RANDOM_STATE)
-    rf = GridSearchCV(rf, {'n_estimators': [100, 200],
+    rf = GridSearchCV(rf, {'n_estimators': [100, 1000],
                            'max_features': [1, 2, 3, 4, 5]},
-                      #    'min_impurity_decrease': [1e-4, 1e-3]},
                       scoring=scorer, cv=sampler, n_jobs=6)
     dtree = DecisionTreeClassifier(random_state=RANDOM_STATE)
     dtree = GridSearchCV(dtree,
@@ -87,9 +79,6 @@ def getBaseClassifiers(pre_pipeline=None):
     clfs.append(("RF", rf))
     clfs.append(("NB", GaussianNB()))
     clfs.append(("QDA", qda))
-    # ttt = testclf()
-    # ttt = GridSearchCV(ttt, {'myparam': [1, 2, 3]}, scoring=scorer, cv=sampler)
-    # clfs.append((ttt, "testclf"))
 
     if(pre_pipeline is not None):
         return [(Pipeline([pre_pipeline,
@@ -100,6 +89,15 @@ def getBaseClassifiers(pre_pipeline=None):
 
 
 DEEP_CACHE_DIR = mkdtemp()
+
+"""
+Lucas:
+-Fazer gridseach do Tripletnet
+
+Gabriel:
+-Fazer callback loss.
+
+"""
 
 
 def getDeepTransformers():
@@ -144,7 +142,6 @@ def main(save_file, D, method="orig"):
     base_classifiers = getBaseClassifiers()
 
     sksampler = StratifiedGroupKFold(5, shuffle=False)
-    # sksampler = StratifiedKFold(10, shuffle=False)
     # sksampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
     cachedir = mkdtemp()
 
@@ -200,11 +197,8 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--inputdata', type=str, required=True)
-    # parser.add_argument('--model', type=str, required=False, help='pre-trained model in pkl')
     parser.add_argument('-o', '--outfile', type=str, required=False)
-    parser.add_argument('--method', type=str, choices=['orig', 'divconquer'], default='orig')
     args = parser.parse_args()
 
     D = loadRPDBCSData(args.inputdata)
     main(args.outfile, D, method=args.method)
-    # main2(args.outfile, D, trained_model=args.model)
