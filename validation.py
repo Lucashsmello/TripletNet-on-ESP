@@ -90,15 +90,6 @@ def getBaseClassifiers(pre_pipeline=None):
 
 DEEP_CACHE_DIR = mkdtemp()
 
-"""
-Lucas:
--Fazer gridseach do Tripletnet
-
-Gabriel:
--Fazer callback loss.
-
-"""
-
 
 def getDeepTransformers():
     global DEEP_CACHE_DIR
@@ -116,7 +107,7 @@ def getDeepTransformers():
                                 module__num_outputs=8, device='cuda',
                                 train_split=None,
                                 criterion=TripletNetwork.OnlineTripletLossWrapper,
-                                iterator_train=BalancedDataLoader, iterator_train__num_workers=3, iterator_train__pin_memory=True,
+                                iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
                                 **parameters
                                 )
     # tripletnet = TripletEnsembleNetwork(lmelloEmbeddingNet, k=4,
@@ -130,7 +121,7 @@ def getDeepTransformers():
     return deep_transf
 
 
-def main(save_file, D, method="orig"):
+def main(save_file, D):
     global DEEP_CACHE_DIR
 
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
@@ -201,4 +192,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     D = loadRPDBCSData(args.inputdata)
-    main(args.outfile, D, method=args.method)
+    main(args.outfile, D)
