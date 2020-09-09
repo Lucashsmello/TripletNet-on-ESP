@@ -9,7 +9,7 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.model_selection import StratifiedKFold, cross_validate, StratifiedShuffleSplit, ShuffleSplit, GroupKFold, GridSearchCV
 from sklearn.model_selection import cross_validate
-from rpdbcs.model_selection import StratifiedGroupKFold
+from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import skorch
@@ -37,7 +37,7 @@ def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     targets, _ = D.getMulticlassTargets()
-    D.remove(np.where(targets == 3)[0])
+    # D.remove(np.where(targets == 3)[0]) # removes desalinhamento
     print("Dataset length", len(D))
     D.normalize(37.28941975)
     D.shuffle()
@@ -97,7 +97,7 @@ def getDeepTransformers():
     checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
     parameters = {
         'callbacks': [checkpoint_callback, LoadEndState(checkpoint_callback)],
-        'max_epochs': 100,
+        'max_epochs': 1,
         'batch_size': 125,
         'margin_decay_delay': 50,
         'margin_decay_value': 0.5}
@@ -132,27 +132,28 @@ def main(save_file, D):
     transformers = getDeepTransformers()
     base_classifiers = getBaseClassifiers()
 
-    sksampler = StratifiedGroupKFold(5, shuffle=False)
-    # sksampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
+    # sampler = StratifiedGroupKFold(5, shuffle=False)
+    sampler = rpdbcsKFold(5, shuffle=True, random_state=RANDOM_STATE)
+    # sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
     cachedir = mkdtemp()
 
     scoring = ['accuracy', 'f1_macro']
     Results = {}
-    for transf, base_classif in itertools.product(transformers, base_classifiers):
-        transf_name, transf = transf
-        classif_name, base_classif = base_classif
-        classifier = Pipeline([('encodding', transf),
-                               ('classifier', base_classif)],
-                              memory=cachedir)
-        scores = cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
-                                cv=sksampler, return_estimator=False)
-        Results['%s + %s' % (transf_name, classif_name)] = scores
+    # for transf, base_classif in itertools.product(transformers, base_classifiers):
+    #     transf_name, transf = transf
+    #     classif_name, base_classif = base_classif
+    #     classifier = Pipeline([('encodding', transf),
+    #                            ('classifier', base_classif)],
+    #                           memory=cachedir)
+    #     scores = cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
+    #                             cv=sampler, return_estimator=False)
+    #     Results['%s + %s' % (transf_name, classif_name)] = scores
 
     ictaifeats_names = getICTAI2016FeaturesNames()
     features = D.asDataFrame()[ictaifeats_names].values
     for classif_name, base_classif in base_classifiers:
         scores = cross_validate(base_classif, features, Y, groups=group_ids,
-                                scoring=scoring, cv=sksampler)
+                                scoring=scoring, cv=sampler)
         Results[classif_name] = scores
     # classifier = GridSearchCV(classifier,
     #                           {'encodding__optimizer__lr': [1e-4]}, scoring='f1_macro',
