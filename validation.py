@@ -97,7 +97,7 @@ def getDeepTransformers():
     checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
     parameters = {
         'callbacks': [checkpoint_callback, LoadEndState(checkpoint_callback)],
-        'max_epochs': 1,
+        'max_epochs': 100,
         'batch_size': 125,
         'margin_decay_delay': 50,
         'margin_decay_value': 0.5}
@@ -139,15 +139,15 @@ def main(save_file, D):
 
     scoring = ['accuracy', 'f1_macro']
     Results = {}
-    # for transf, base_classif in itertools.product(transformers, base_classifiers):
-    #     transf_name, transf = transf
-    #     classif_name, base_classif = base_classif
-    #     classifier = Pipeline([('encodding', transf),
-    #                            ('classifier', base_classif)],
-    #                           memory=cachedir)
-    #     scores = cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
-    #                             cv=sampler, return_estimator=False)
-    #     Results['%s + %s' % (transf_name, classif_name)] = scores
+    for transf, base_classif in itertools.product(transformers, base_classifiers):
+        transf_name, transf = transf
+        classif_name, base_classif = base_classif
+        classifier = Pipeline([('encodding', transf),
+                               ('classifier', base_classif)],
+                              memory=cachedir)
+        scores = cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
+                                cv=sampler, return_estimator=False)
+        Results['%s + %s' % (transf_name, classif_name)] = scores
 
     ictaifeats_names = getICTAI2016FeaturesNames()
     features = D.asDataFrame()[ictaifeats_names].values
