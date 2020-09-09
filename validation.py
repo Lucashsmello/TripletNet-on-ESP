@@ -107,12 +107,6 @@ def getDeepTransformers():
     tripletnet_param_grid = {'batch_size': [40, 80],
                              'margin_decay_delay': [30, 40]}
 
-    # GridSearchCV(classifier, {
-    #     'encodding__batch_size': [20, 40, 80]
-    #     # 'encodding__learning_rate': [1e-4, 1e-3],
-    #     # 'encodding__margin_decay_delay': [20, 30, 40]
-    # }, cv=sampler, scorer='f1_macro')
-
     # tripletnet = TripletEnsembleNetwork(lmelloEmbeddingNet, k=4,
     #                                     optimizer=optim.Adam, optimizer__lr=1e-4, optimizer__weight_decay=1e-4,
     #                                     module__num_outputs=32, device='cuda',
@@ -169,8 +163,8 @@ def main(save_file, D):
     base_classifiers = getBaseClassifiers(('normalizer', StandardScaler()))
 
     # sampler = StratifiedGroupKFold(5, shuffle=False)
-    # sampler = rpdbcsKFold(5, shuffle=True, random_state=RANDOM_STATE)
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
+    sampler = rpdbcsKFold(5, shuffle=True, random_state=RANDOM_STATE)
+    # sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2)
 
     scoring = getMetrics(Ynames)
 
