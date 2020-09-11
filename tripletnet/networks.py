@@ -115,7 +115,7 @@ class TripletEnsembleNetwork(TripletNetwork):
                 self.targets = dataset.targets
             self.targets = self.targets[line_idxs]
 
-    def __init__(self, module, k, *args, criterion=TripletNetwork.OnlineTripletLossWrapper, **kwargs):
+    def __init__(self, module, k=2, *args, criterion=TripletNetwork.OnlineTripletLossWrapper, **kwargs):
         super().__init__(module,
                          *args,
                          criterion=criterion,
