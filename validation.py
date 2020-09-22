@@ -11,6 +11,8 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.model_selection import *
 from sklearn.model_selection._search import BaseSearchCV
+from sklearn.model_selection._split import _BaseKFold
+from tripletnet.classifiers.GridSearchCV_norefit import GridSearchCV_norefit
 from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, StratifiedGroupSplit
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, f1_score, make_scorer
@@ -106,14 +108,14 @@ def getDeepTransformers():
     tripletnet_param_grid = {'batch_size': [40, 80],
                              'margin_decay_delay': [30, 40]}
 
-    # tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
-    #                                              optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-    #                                              module__num_outputs=32, device='cuda',
-    #                                              batch_size=80, margin_decay_delay=40,
-    #                                              train_split=None,
-    #                                              iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
-    #                                              **parameters)
-    # tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16]}
+    tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
+                                                 optimizer=optim.Adam, optimizer__weight_decay=1e-4,
+                                                 module__num_outputs=32, device='cuda',
+                                                 batch_size=80, margin_decay_delay=40,
+                                                 train_split=None,
+                                                 iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
+                                                 **parameters)
+    tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16]}
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     # deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
     return deep_transf
@@ -145,17 +147,25 @@ def combineTransformerClassifier(transformers, base_classifiers):
         transf_param_grid = {"transformer__%s" % k: v for k, v in transf_param_grid.items()}
         base_classif_param_grid = {"base_classifier__%s" % k: v for k, v in base_classif_param_grid.items()}
         param_grid = {**transf_param_grid, **base_classif_param_grid}
-        classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', cv=sampler)
+        classifier = GridSearchCV_norefit(classifier, param_grid, scoring='f1_macro', cv=sampler)
 
         yield ('%s + %s' % (transf_name, base_classif_name), classifier)
 
 
 def rpdbcs_cross_validate(estimator, X, y, groups, scoring=None, cv=None, verbose=0,
                           return_train_score=False, return_estimator=False):
+    """
+    Ensures that the validation dataset used by Gridsearch is a fold from the provided sampler.
+    It substitutes the sampler of the Gridsearch (cv attribute).
+    Only accepts KFold based cross validation.
+    """
     from sklearn.metrics._scorer import _check_multimetric_scoring
     from sklearn.model_selection._validation import _fit_and_score, _aggregate_score_dicts
     from sklearn.base import clone
 
+    if(not isinstance(cv, _BaseKFold)):
+        return cross_validate(estimator, X, y, groups, scoring=scoring, cv=cv, verbose=verbose,
+                              return_train_score=return_train_score, return_estimator=return_estimator)
     scorers, _ = _check_multimetric_scoring(estimator, scoring=scoring)
     folds = [(train_idxs, test_idxs) for train_idxs, test_idxs in cv.split(X, y, groups)]
     scores = []
@@ -163,7 +173,7 @@ def rpdbcs_cross_validate(estimator, X, y, groups, scoring=None, cv=None, verbos
         if(isinstance(estimator, BaseSearchCV)):
             validation_fold_indicator = np.where(np.isin(traindata, folds[i-1][1]), 0, -1)
             validation_sampler = PredefinedSplit(validation_fold_indicator)
-            assert(validation_sampler.get_n_splits() == 1)
+            assert(validation_sampler.get_n_splits() == 1), validation_sampler.get_n_splits()
             estimator.cv = validation_sampler
         s = _fit_and_score(
             clone(estimator), X, y, scorers, traindata, test_fold, verbose, None,
@@ -223,10 +233,11 @@ def main(save_file, D):
     features = D.asDataFrame()[ictaifeats_names].values
     for classif_name, classifier, param_grid in base_classifiers:
         print(classif_name)
-        # n_jobs: You may not want all your process being used.
+        # n_jobs: You may not want all your cores being used.
         classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1)
         scores = rpdbcs_cross_validate(classifier, features, Y, groups=group_ids,
                                        scoring=scoring, cv=sampler)
+        # classifier.fit(features, Y)
         Results[classif_name] = scores
 
     results_asmatrix = []
