@@ -1,5 +1,6 @@
 import skorch
 from skorch.callbacks import Callback
+from math import log10
 
 
 class LoadEndState(Callback):
@@ -9,3 +10,12 @@ class LoadEndState(Callback):
     def on_train_end(self, net,
                      X=None, y=None, **kwargs):
         net.load_params(checkpoint=self.checkpoint)
+
+class LRMonitor(Callback):
+    """
+    Monitors the learning rate
+    """
+    def on_epoch_end(self, net, **kwargs):
+        for group in net.optimizer_.param_groups:
+            net.history.record('log10(lr)', log10(group['lr']))
+            break

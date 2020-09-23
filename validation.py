@@ -25,7 +25,7 @@ from tripletnet.networks import lmelloEmbeddingNet
 import numpy as np
 import pandas as pd
 from tripletnet.datahandler import BasicTorchDataset
-from tripletnet.callbacks import LoadEndState
+from tripletnet.callbacks import LoadEndState, LRMonitor
 import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
@@ -42,7 +42,6 @@ def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     targets, _ = D.getMulticlassTargets()
-    # print("WARNING: removing desalinhamento!")
     # D.remove(np.where(targets == 3)[0])  # removes desalinhamento
     print("Dataset length", len(D))
     D.normalize(37.28941975)
@@ -57,7 +56,7 @@ def getBaseClassifiers(pre_pipeline=None):
     clfs = []
     knn = KNeighborsClassifier()
     knn_param_grid = {'n_neighbors': [1, 3, 5, 7, 9, 11, 13, 15]}
-    rf = RandomForestClassifier(random_state=RANDOM_STATE)
+    rf = RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1)
     rf_param_grid = {'n_estimators': [100, 1000],
                      'max_features': [2, 3, 4, 5]}
     dtree = DecisionTreeClassifier(random_state=RANDOM_STATE)
@@ -86,38 +85,46 @@ DEEP_CACHE_DIR = mkdtemp()
 PIPELINE_CACHE_DIR = mkdtemp()
 
 
+def getCallbacks():
+    checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
+    lrscheduler = skorch.callbacks.LRScheduler(policy='StepLR', step_size=30, gamma=0.9)
+    # É possível dar nomes ao callbacks para poder usar gridsearch neles: https://skorch.readthedocs.io/en/stable/user/callbacks.html#learning-rate-schedulers
+
+    return [checkpoint_callback, LoadEndState(checkpoint_callback), LRMonitor(), lrscheduler]
+
+
 def getDeepTransformers():
     global DEEP_CACHE_DIR
 
-    checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
     parameters = {
-        'callbacks': [checkpoint_callback, LoadEndState(checkpoint_callback)],
-        'max_epochs': 100,
+        'callbacks': getCallbacks(),
+        'max_epochs': 200,
         'optimizer__lr': 1e-4,
         'criterion': TripletNetwork.OnlineTripletLossWrapper,
         'margin_decay_value': 0.75}
     deep_transf = []
     tripletnet = TripletNetwork(lmelloEmbeddingNet,
                                 optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-                                module__num_outputs=8,
                                 device='cuda',
                                 train_split=None,
                                 iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
                                 **parameters
                                 )
-    tripletnet_param_grid = {'batch_size': [40, 80],
-                             'margin_decay_delay': [30, 40]}
+    tripletnet_param_grid = {'batch_size': [80],
+                             'margin_decay_delay': [35, 50],
+                             'module__num_outputs': [4, 8, 16, 32, 64, 128]}
 
     tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
                                                  optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-                                                 module__num_outputs=32, device='cuda',
-                                                 batch_size=80, margin_decay_delay=40,
+                                                 device='cuda',
+                                                 batch_size=80, margin_decay_delay=50,
                                                  train_split=None,
                                                  iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
                                                  **parameters)
-    tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16]}
+    tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16],
+                                      'module__num_outputs': [16, 32, 64]}
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
-    # deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
+    deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
     return deep_transf
 
 
@@ -237,7 +244,6 @@ def main(save_file, D):
         classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1)
         scores = rpdbcs_cross_validate(classifier, features, Y, groups=group_ids,
                                        scoring=scoring, cv=sampler)
-        # classifier.fit(features, Y)
         Results[classif_name] = scores
 
     results_asmatrix = []
