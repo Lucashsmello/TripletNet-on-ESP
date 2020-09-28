@@ -1,5 +1,5 @@
-from joblib import Memory
 from sklearn.base import TransformerMixin, BaseEstimator
+from joblib import Memory
 import torch
 from torch import nn
 import torch.optim as optim
@@ -25,7 +25,7 @@ from tripletnet.networks import lmelloEmbeddingNet
 import numpy as np
 import pandas as pd
 from tripletnet.datahandler import BasicTorchDataset
-from tripletnet.callbacks import LoadEndState, LRMonitor
+from tripletnet.callbacks import LoadEndState, LRMonitor, CleanNetCallback
 import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
@@ -36,6 +36,24 @@ torch.cuda.manual_seed(RANDOM_STATE)
 torch.manual_seed(RANDOM_STATE)
 # torch.backends.cudnn.benchmark = False
 # torch.backends.cudnn.deterministic = True
+
+DEEP_CACHE_DIR = mkdtemp()
+PIPELINE_CACHE_DIR = mkdtemp()
+
+# def _cached_func_skorchnet(net, *args, **kwargs):
+
+
+# class CustomMemory(Memory):
+#     def __init__(self, location=None, backend='local', cachedir=None,
+#                  mmap_mode=None, compress=False, verbose=1, bytes_limit=None,
+#                  backend_options=None):
+#         super.__init__(location=location, backend=backend, cachedir=cachedir,
+#                        mmap_mode=mmap_mode, compress=compress, verbose=verbose, bytes_limit=bytes_limit,
+#                        backend_options=backend_options)
+
+#     def cache(self, func=None, ignore=None, verbose=None, mmap_mode=False):
+
+#         super().cache(func=_cached_func_skorchnet, ignore=ignore, verbose=verbose, mmap_mode)
 
 
 def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
@@ -81,16 +99,12 @@ def getBaseClassifiers(pre_pipeline=None):
     return clfs
 
 
-DEEP_CACHE_DIR = mkdtemp()
-PIPELINE_CACHE_DIR = mkdtemp()
-
-
 def getCallbacks():
     checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
-    lrscheduler = skorch.callbacks.LRScheduler(policy='StepLR', step_size=30, gamma=0.9)
+    lrscheduler = skorch.callbacks.LRScheduler(policy=optim.lr_scheduler.StepLR, step_size=30, gamma=0.9)
     # É possível dar nomes ao callbacks para poder usar gridsearch neles: https://skorch.readthedocs.io/en/stable/user/callbacks.html#learning-rate-schedulers
 
-    return [checkpoint_callback, LoadEndState(checkpoint_callback), LRMonitor(), lrscheduler]
+    return [checkpoint_callback, LoadEndState(checkpoint_callback), lrscheduler, CleanNetCallback()]
 
 
 def getDeepTransformers():
@@ -98,7 +112,7 @@ def getDeepTransformers():
 
     parameters = {
         'callbacks': getCallbacks(),
-        'max_epochs': 200,
+        'max_epochs': 100,
         'optimizer__lr': 1e-4,
         'criterion': TripletNetwork.OnlineTripletLossWrapper,
         'margin_decay_value': 0.75}
@@ -106,13 +120,15 @@ def getDeepTransformers():
     tripletnet = TripletNetwork(lmelloEmbeddingNet,
                                 optimizer=optim.Adam, optimizer__weight_decay=1e-4,
                                 device='cuda',
+                                module__num_outputs=8,
+                                batch_size=80,
                                 train_split=None,
                                 iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
                                 **parameters
                                 )
     tripletnet_param_grid = {'batch_size': [80],
                              'margin_decay_delay': [35, 50],
-                             'module__num_outputs': [4, 8, 16, 32, 64, 128]}
+                             'module__num_outputs': [5, 8, 16, 32, 64, 128]}
 
     tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
                                                  optimizer=optim.Adam, optimizer__weight_decay=1e-4,
