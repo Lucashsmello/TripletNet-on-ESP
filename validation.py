@@ -12,8 +12,7 @@ from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.model_selection import *
 from sklearn.model_selection._search import BaseSearchCV
 from sklearn.model_selection._split import _BaseKFold
-from tripletnet.classifiers.GridSearchCV_norefit import GridSearchCV_norefit
-from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, StratifiedGroupSplit
+from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, GridSearchCV_norefit
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, f1_score, make_scorer
 from sklearn.preprocessing import StandardScaler
