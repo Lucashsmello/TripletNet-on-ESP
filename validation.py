@@ -9,10 +9,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from sklearn.model_selection import *
-from sklearn.model_selection._search import BaseSearchCV
-from sklearn.model_selection._split import _BaseKFold
-from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, GridSearchCV_norefit
+from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, GridSearchCV_norefit, rpdbcs_cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, f1_score, make_scorer
 from sklearn.preprocessing import StandardScaler
@@ -157,7 +154,6 @@ def getMetrics(labels_names):
 
 
 def combineTransformerClassifier(transformers, base_classifiers):
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=1.0/9, random_state=RANDOM_STATE)
     classifier = None
 
     for transf, base_classif in itertools.product(transformers, base_classifiers):
@@ -169,64 +165,9 @@ def combineTransformerClassifier(transformers, base_classifiers):
         transf_param_grid = {"transformer__%s" % k: v for k, v in transf_param_grid.items()}
         base_classif_param_grid = {"base_classifier__%s" % k: v for k, v in base_classif_param_grid.items()}
         param_grid = {**transf_param_grid, **base_classif_param_grid}
-        classifier = GridSearchCV_norefit(classifier, param_grid, scoring='f1_macro', cv=sampler)
+        classifier = GridSearchCV_norefit(classifier, param_grid, scoring='f1_macro')
 
         yield ('%s + %s' % (transf_name, base_classif_name), classifier)
-
-
-def rpdbcs_cross_validate(estimator, X, y, groups, scoring=None, cv=None, verbose=0,
-                          return_train_score=False, return_estimator=False):
-    """
-    Ensures that the validation dataset used by Gridsearch is a fold from the provided sampler.
-    It substitutes the sampler of the Gridsearch (cv attribute).
-    Only accepts KFold based cross validation.
-    """
-    from sklearn.metrics._scorer import _check_multimetric_scoring
-    from sklearn.model_selection._validation import _fit_and_score, _aggregate_score_dicts
-    from sklearn.base import clone
-
-    if(not isinstance(cv, _BaseKFold)):
-        return cross_validate(estimator, X, y, groups, scoring=scoring, cv=cv, verbose=verbose,
-                              return_train_score=return_train_score, return_estimator=return_estimator)
-    scorers, _ = _check_multimetric_scoring(estimator, scoring=scoring)
-    folds = [(train_idxs, test_idxs) for train_idxs, test_idxs in cv.split(X, y, groups)]
-    scores = []
-    for i, (traindata, test_fold) in enumerate(folds):
-        if(isinstance(estimator, BaseSearchCV)):
-            validation_fold_indicator = np.where(np.isin(traindata, folds[i-1][1]), 0, -1)
-            validation_sampler = PredefinedSplit(validation_fold_indicator)
-            assert(validation_sampler.get_n_splits() == 1), validation_sampler.get_n_splits()
-            estimator.cv = validation_sampler
-        s = _fit_and_score(
-            clone(estimator), X, y, scorers, traindata, test_fold, verbose, None,
-            None, return_train_score=return_train_score,
-            return_times=True, return_estimator=return_estimator,
-            error_score=np.nan)
-        scores.append(s)
-
-    zipped_scores = list(zip(*scores))
-    if return_train_score:
-        train_scores = zipped_scores.pop(0)
-        train_scores = _aggregate_score_dicts(train_scores)
-    if return_estimator:
-        fitted_estimators = zipped_scores.pop()
-    test_scores, fit_times, score_times = zipped_scores
-    test_scores = _aggregate_score_dicts(test_scores)
-
-    ret = {'fit_time': np.array(fit_times),
-           'score_time': np.array(score_times)}
-
-    if return_estimator:
-        ret['estimator'] = fitted_estimators
-
-    for name in scorers:
-        ret['test_%s' % name] = np.array(test_scores[name])
-        if return_train_score:
-            key = 'train_%s' % name
-            ret[key] = np.array(train_scores[name])
-
-    return ret
-
 
 def main(save_file, D):
     global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR
