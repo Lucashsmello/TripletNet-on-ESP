@@ -4,14 +4,15 @@ import torch
 from torch import nn
 import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset, getICTAI2016FeaturesNames
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.model_selection import GridSearchCV, StratifiedShuffleSplit, GroupShuffleSplit, StratifiedKFold
 from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, GridSearchCV_norefit, rpdbcs_cross_validate
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, f1_score, make_scorer
+from sklearn.metrics import accuracy_score, f1_score, make_scorer, precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
 import skorch
 from tripletnet.networks import TripletNetwork, TripletEnsembleNetwork
@@ -20,7 +21,6 @@ from torchvision import transforms
 from tripletnet.networks import lmelloEmbeddingNet
 import numpy as np
 import pandas as pd
-from tripletnet.datahandler import BasicTorchDataset
 from tripletnet.callbacks import LoadEndState, LRMonitor, CleanNetCallback
 import itertools
 from tempfile import mkdtemp
@@ -36,29 +36,18 @@ torch.manual_seed(RANDOM_STATE)
 DEEP_CACHE_DIR = mkdtemp()
 PIPELINE_CACHE_DIR = mkdtemp()
 
-# def _cached_func_skorchnet(net, *args, **kwargs):
 
-
-# class CustomMemory(Memory):
-#     def __init__(self, location=None, backend='local', cachedir=None,
-#                  mmap_mode=None, compress=False, verbose=1, bytes_limit=None,
-#                  backend_options=None):
-#         super.__init__(location=location, backend=backend, cachedir=cachedir,
-#                        mmap_mode=mmap_mode, compress=compress, verbose=verbose, bytes_limit=bytes_limit,
-#                        backend_options=backend_options)
-
-#     def cache(self, func=None, ignore=None, verbose=None, mmap_mode=False):
-
-#         super().cache(func=_cached_func_skorchnet, ignore=ignore, verbose=verbose, mmap_mode)
-
-
-def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000):
+def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000, normalize=True):
     D = readDataset('%s/freq.csv' % data_dir, '%s/labels.csv' % data_dir,
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
+    D.discardMultilabel()
     targets, _ = D.getMulticlassTargets()
     # D.remove(np.where(targets == 3)[0])  # removes desalinhamento
+    df = D.asDataFrame()
+    # D.remove(df[(df['project name'] == 'Baker') & (df['bcs name'] == 'MA15')].index.values)
     print("Dataset length", len(D))
-    D.normalize(37.28941975)
+    if(normalize):
+        D.normalize(37.28941975)
     D.shuffle()
 
     return D
@@ -73,18 +62,12 @@ def getBaseClassifiers(pre_pipeline=None):
     rf = RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1)
     rf_param_grid = {'n_estimators': [100, 1000],
                      'max_features': [2, 3, 4, 5]}
-    dtree = DecisionTreeClassifier(random_state=RANDOM_STATE)
-    # dtree = GridSearchCV(dtree,
-    #                      {
-    #                          'max_leaf_nodes': [10, 100],
-    #                          'max_depth': [3, 6, 9, 12, 15]
-    #                      }
-    #                      )
+    dtree = DecisionTreeClassifier(random_state=RANDOM_STATE, min_impurity_decrease=0.001)
     qda = QuadraticDiscriminantAnalysis()
     qda_param_grid = {'reg_param': [0.0, 1e-6, 1e-5]}
     clfs.append(("knn", knn, knn_param_grid))
     clfs.append(("DT", dtree, {}))
-    clfs.append(("RF", rf, rf_param_grid))
+    # clfs.append(("RF", rf, rf_param_grid))
     clfs.append(("NB", GaussianNB(), {}))
     clfs.append(("QDA", qda, qda_param_grid))
 
@@ -97,100 +80,148 @@ def getBaseClassifiers(pre_pipeline=None):
 
 def getCallbacks():
     checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
-    lrscheduler = skorch.callbacks.LRScheduler(policy=optim.lr_scheduler.StepLR, step_size=30, gamma=0.9)
+    lrscheduler = skorch.callbacks.LRScheduler(policy=optim.lr_scheduler.StepLR,
+                                               step_size=40, gamma=0.9, event_name=None)
     # É possível dar nomes ao callbacks para poder usar gridsearch neles: https://skorch.readthedocs.io/en/stable/user/callbacks.html#learning-rate-schedulers
 
-    return [checkpoint_callback, LoadEndState(checkpoint_callback), lrscheduler, CleanNetCallback()]
+    return [checkpoint_callback, LoadEndState(checkpoint_callback), lrscheduler, LRMonitor(), CleanNetCallback()]
 
 
 def getDeepTransformers():
-    global DEEP_CACHE_DIR
-
+    def newEnsemble(n):
+        return [TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, batch_size=80, init_random_state=i+100, **parameters)
+                for i in range(n)]
     parameters = {
         'callbacks': getCallbacks(),
-        'max_epochs': 100,
-        'optimizer__lr': 1e-4,
-        'criterion': TripletNetwork.OnlineTripletLossWrapper,
+        'max_epochs': 80,
+        'device': 'cuda',
+        'optimizer': optim.Adam, 'optimizer__weight_decay': 1e-4, 'optimizer__lr': 1e-4,
+        'train_split': None,
+        'iterator_train': BalancedDataLoader, 'iterator_train__num_workers': 0, 'iterator_train__pin_memory': False,
+        # 'criterion': TripletNetwork.OnlineTripletLossWrapper,
         'margin_decay_value': 0.75}
     deep_transf = []
-    tripletnet = TripletNetwork(lmelloEmbeddingNet,
-                                optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-                                device='cuda',
-                                module__num_outputs=8,
-                                batch_size=80,
-                                train_split=None,
-                                iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
-                                **parameters
-                                )
-    tripletnet_param_grid = {'batch_size': [80],
-                             'margin_decay_delay': [35, 50],
-                             'module__num_outputs': [5, 8, 16, 32, 64, 128]}
+    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, batch_size=80, **parameters)
+    nets = newEnsemble(3)
+    nets2 = newEnsemble(5)
+    nets3 = newEnsemble(7)
+    nets4 = newEnsemble(9)
 
-    tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
-                                                 optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-                                                 device='cuda',
-                                                 batch_size=80, margin_decay_delay=50,
-                                                 train_split=None,
-                                                 iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
-                                                 **parameters)
-    tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16],
-                                      'module__num_outputs': [16, 32, 64]}
+    # tripletnet_param_grid = {'batch_size': [80],
+    #                          'margin_decay_delay': [35, 50],
+    #                          'module__num_outputs': [5, 8, 16, 32, 64, 128]}
+    tripletnet_param_grid = {'batch_size': [80],
+                             'margin_decay_delay': [40],
+                             'module__num_outputs': [8],
+                             'optimizer__lr': [1e-4, 5e-4, 1e-3]}
+
+    # tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
+    #                                              optimizer=optim.Adam, optimizer__weight_decay=1e-4,
+    #                                              device='cuda',
+    #                                              batch_size=80, margin_decay_delay=50,
+    #                                              train_split=None,
+    #                                              iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
+    #                                              **parameters)
+    # tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16],
+    #                                   'module__num_outputs': [16, 32, 64]}
+    # tripletnet_ensemble_param_grid = {'k': [4],
+    #                                   'module__num_outputs': [16]}
+    deep_transf.append(("ensemble_tripletnets_3", nets, tripletnet_param_grid))
+    deep_transf.append(("ensemble_tripletnets_5", nets2, tripletnet_param_grid))
+    # deep_transf.append(("ensemble_tripletnets_7", nets3, tripletnet_param_grid))
+    # deep_transf.append(("ensemble_tripletnets_9", nets4, tripletnet_param_grid))
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
-    deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
+    # deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
     return deep_transf
 
 
 def getMetrics(labels_names):
+    def foldcount(y1, y2):
+        return len(y1)
     """
     args:
         labels_names (dict): mapping from label code (int) to label name (str).
     """
     scoring = {'accuracy': 'accuracy',
-               'f1_macro': 'f1_macro'}
+               'f1_macro': 'f1_macro',
+               'precision_macro': 'precision_macro',
+               'recall_macro': 'recall_macro',
+               'log_loss': 'neg_log_loss',
+               'fold count': make_scorer(foldcount)}
     for code, name in labels_names.items():
         scoring['f-measure_%s' % name] = make_scorer(f1_score, average=None, labels=[code])
+        scoring['precision_%s' % name] = make_scorer(precision_score, average=None, labels=[code])
+        scoring['recall_%s' % name] = make_scorer(recall_score, average=None, labels=[code])
 
     return scoring
 
 
 def combineTransformerClassifier(transformers, base_classifiers):
-    classifier = None
+    def buildPipeline(T, base_classif):
+        return Pipeline([('transformer', T),
+                         ('base_classifier', base_classif)],
+                        #  ('base_classifier', GridSearchCV(base_classif, base_classif_param_grid))],
+                        memory=PIPELINE_CACHE_DIR)
+
+    def buildGridSearch(clf, transf_param_grid, base_classif_param_grid):
+        transf_param_grid = {"transformer__%s" % k: v
+                             for k, v in transf_param_grid.items()}
+        base_classif_param_grid = {"base_classifier__%s" % k: v
+                                   for k, v in base_classif_param_grid.items()}
+        param_grid = {**transf_param_grid, **base_classif_param_grid}
+        return GridSearchCV_norefit(clf, param_grid, scoring='f1_macro')
 
     for transf, base_classif in itertools.product(transformers, base_classifiers):
         transf_name, transf, transf_param_grid = transf
         base_classif_name, base_classif, base_classif_param_grid = base_classif
-        classifier = Pipeline([('transformer', transf),
-                               ('base_classifier', base_classif)],
-                              memory=PIPELINE_CACHE_DIR)
-        transf_param_grid = {"transformer__%s" % k: v for k, v in transf_param_grid.items()}
-        base_classif_param_grid = {"base_classifier__%s" % k: v for k, v in base_classif_param_grid.items()}
-        param_grid = {**transf_param_grid, **base_classif_param_grid}
-        classifier = GridSearchCV_norefit(classifier, param_grid, scoring='f1_macro')
+        if(isinstance(transf, list)):
+            C = [("net%d" % i, buildPipeline(T, base_classif))
+                 for i, T in enumerate(transf)]
+
+            param_grid = {}
+            for netname, _ in C:
+                tpgrid = {"%s__transformer__%s" % (netname, k): v
+                          for k, v in transf_param_grid.items()}
+                bcgrid = {"%s__base_classifier__%s" % (netname, k): v
+                          for k, v in base_classif_param_grid.items()}
+                param_grid.update({**tpgrid, **bcgrid})
+            eclf = VotingClassifier(estimators=C, voting='soft')
+            classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
+        else:
+            classifier = buildGridSearch(buildPipeline(transf, base_classif),
+                                         transf_param_grid, base_classif_param_grid)
 
         yield ('%s + %s' % (transf_name, base_classif_name), classifier)
 
+
 def main(save_file, D):
     global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR
+    import pandas as pd
 
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
     Y, Ynames = D.getMulticlassTargets()
-    group_ids = D.groupids('test')
+    # Yset = enumerate(set(Y))
+    # Y, Ymap = pd.factorize(Y)
+    # Ynames = {i: Ynames[oldi] for i, oldi in enumerate(Ymap)}
+    group_ids = D.groupids('bcs')
 
     transformers = getDeepTransformers()
     base_classifiers = getBaseClassifiers(('normalizer', StandardScaler()))
 
-    # sampler = StratifiedGroupKFold(5, shuffle=False)
-    sampler = rpdbcsKFold(5, shuffle=True, random_state=RANDOM_STATE)
-    # sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_STATE)
+    # sampler = StratifiedKFold(10, shuffle=True, random_state=RANDOM_STATE)
+    # sampler = StratifiedGroupKFold(5, shuffle=True, random_state=RANDOM_STATE)
+    # sampler = rpdbcsKFold(5, shuffle=False)
+    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.8, random_state=RANDOM_STATE)
+    # sampler = GroupShuffleSplit(n_splits=5, test_size=0.8, random_state=0)
 
     scoring = getMetrics(Ynames)
 
     Results = {}
     for classifier_name, classifier in combineTransformerClassifier(transformers, base_classifiers):
         print(classifier_name)
-        scores = rpdbcs_cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
-                                       cv=sampler)
-        Results[classifier_name] = scores
+        Results[classifier_name] = rpdbcs_cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
+                                                         cv=sampler)
+        # classifier.fit(X, Y)
 
     ictaifeats_names = getICTAI2016FeaturesNames()
     features = D.asDataFrame()[ictaifeats_names].values
