@@ -9,7 +9,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from sklearn.model_selection import GridSearchCV, StratifiedShuffleSplit, GroupShuffleSplit, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedShuffleSplit, GroupShuffleSplit, StratifiedKFold, cross_validate
 from rpdbcs.model_selection import StratifiedGroupKFold, rpdbcsKFold, GridSearchCV_norefit, rpdbcs_cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, f1_score, make_scorer, precision_score, recall_score
@@ -42,7 +42,7 @@ def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000, normalize=T
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     D.discardMultilabel()
     targets, _ = D.getMulticlassTargets()
-    # D.remove(np.where(targets == 3)[0])  # removes desalinhamento
+    D.remove(np.where(targets == 3)[0])  # removes desalinhamento
     df = D.asDataFrame()
     # D.remove(df[(df['project name'] == 'Baker') & (df['bcs name'] == 'MA15')].index.values)
     print("Dataset length", len(D))
@@ -67,7 +67,7 @@ def getBaseClassifiers(pre_pipeline=None):
     qda_param_grid = {'reg_param': [0.0, 1e-6, 1e-5]}
     clfs.append(("knn", knn, knn_param_grid))
     clfs.append(("DT", dtree, {}))
-    # clfs.append(("RF", rf, rf_param_grid))
+    clfs.append(("RF", rf, rf_param_grid))
     clfs.append(("NB", GaussianNB(), {}))
     clfs.append(("QDA", qda, qda_param_grid))
 
@@ -79,29 +79,48 @@ def getBaseClassifiers(pre_pipeline=None):
 
 
 def getCallbacks():
-    checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
+    checkpoint_callback = skorch.callbacks.Checkpoint(
+        dirname=DEEP_CACHE_DIR, monitor='non_zero_triplets_best')  # monitor='train_loss_best')
     lrscheduler = skorch.callbacks.LRScheduler(policy=optim.lr_scheduler.StepLR,
-                                               step_size=40, gamma=0.9, event_name=None)
+                                               step_size=25, gamma=0.8, event_name=None)
     # É possível dar nomes ao callbacks para poder usar gridsearch neles: https://skorch.readthedocs.io/en/stable/user/callbacks.html#learning-rate-schedulers
 
-    return [checkpoint_callback, LoadEndState(checkpoint_callback), lrscheduler, LRMonitor(), CleanNetCallback()]
+    callbacks = [('non_zero_triplets', skorch.callbacks.PassthroughScoring(name='non_zero_triplets', on_train=True))]
+    callbacks += [checkpoint_callback, LoadEndState(checkpoint_callback), lrscheduler, LRMonitor(), CleanNetCallback()]
+
+    return callbacks
 
 
 def getDeepTransformers():
+    from adabelief_pytorch import AdaBelief
+    global DEEP_CACHE_DIR
+
     def newEnsemble(n):
-        return [TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, batch_size=80, init_random_state=i+100, **parameters)
+        return [TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, init_random_state=i+100, **parameters)
                 for i in range(n)]
+
+    optimizer_parameters = {'weight_decay': 1e-4, 'lr': 1e-3,
+                            'eps': 1e-16, 'betas': (0.9, 0.999),
+                            'weight_decouple': True, 'rectify': False}
+    optimizer_parameters = {"optimizer__"+key: v for key, v in optimizer_parameters.items()}
+    optimizer_parameters['optimizer'] = AdaBelief
+
+    # optimizer_parameters = {'weight_decay': 1e-4, 'lr': 1e-3}
+    # optimizer_parameters = {"optimizer__"+key: v for key, v in optimizer_parameters.items()}
+    # optimizer_parameters['optimizer'] = optim.Adam
+
     parameters = {
         'callbacks': getCallbacks(),
-        'max_epochs': 80,
         'device': 'cuda',
-        'optimizer': optim.Adam, 'optimizer__weight_decay': 1e-4, 'optimizer__lr': 1e-4,
+        'max_epochs': 300,
         'train_split': None,
+        'batch_size': 80,
         'iterator_train': BalancedDataLoader, 'iterator_train__num_workers': 0, 'iterator_train__pin_memory': False,
-        # 'criterion': TripletNetwork.OnlineTripletLossWrapper,
-        'margin_decay_value': 0.75}
+        # 'criterion__triplet_selector': siamese_triplet.utils.HardestNegativeTripletSelector(1.0),
+        'margin_decay_value': 0.75, 'margin_decay_delay': 100}
+    parameters = {**parameters, **optimizer_parameters}
     deep_transf = []
-    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, batch_size=80, **parameters)
+    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, **parameters)
     nets = newEnsemble(3)
     nets2 = newEnsemble(5)
     nets3 = newEnsemble(7)
@@ -111,7 +130,7 @@ def getDeepTransformers():
     #                          'margin_decay_delay': [35, 50],
     #                          'module__num_outputs': [5, 8, 16, 32, 64, 128]}
     tripletnet_param_grid = {'batch_size': [80],
-                             'margin_decay_delay': [40],
+                             'margin_decay_delay': [50],
                              'module__num_outputs': [8],
                              'optimizer__lr': [1e-4, 5e-4, 1e-3]}
 
@@ -128,8 +147,8 @@ def getDeepTransformers():
     #                                   'module__num_outputs': [16]}
     deep_transf.append(("ensemble_tripletnets_3", nets, tripletnet_param_grid))
     deep_transf.append(("ensemble_tripletnets_5", nets2, tripletnet_param_grid))
-    # deep_transf.append(("ensemble_tripletnets_7", nets3, tripletnet_param_grid))
-    # deep_transf.append(("ensemble_tripletnets_9", nets4, tripletnet_param_grid))
+    #deep_transf.append(("ensemble_tripletnets_7", nets3, tripletnet_param_grid))
+    #deep_transf.append(("ensemble_tripletnets_9", nets4, tripletnet_param_grid))
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     # deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
     return deep_transf
@@ -157,10 +176,15 @@ def getMetrics(labels_names):
 
 
 def combineTransformerClassifier(transformers, base_classifiers):
-    def buildPipeline(T, base_classif):
+    gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
+
+    def buildPipeline(T, base_classif, base_classif_param_grid=None):
+        if(base_classif_param_grid is None):
+            return Pipeline([('transformer', T),
+                             ('base_classifier', base_classif)],
+                            memory=PIPELINE_CACHE_DIR)
         return Pipeline([('transformer', T),
-                         ('base_classifier', base_classif)],
-                        #  ('base_classifier', GridSearchCV(base_classif, base_classif_param_grid))],
+                         ('base_classifier', GridSearchCV(base_classif, base_classif_param_grid, cv=gridsearch_sampler, n_jobs=-1))],
                         memory=PIPELINE_CACHE_DIR)
 
     def buildGridSearch(clf, transf_param_grid, base_classif_param_grid):
@@ -169,13 +193,13 @@ def combineTransformerClassifier(transformers, base_classifiers):
         base_classif_param_grid = {"base_classifier__%s" % k: v
                                    for k, v in base_classif_param_grid.items()}
         param_grid = {**transf_param_grid, **base_classif_param_grid}
-        return GridSearchCV_norefit(clf, param_grid, scoring='f1_macro')
+        return GridSearchCV_norefit(clf, param_grid, scoring='f1_macro', cv=gridsearch_sampler)
 
     for transf, base_classif in itertools.product(transformers, base_classifiers):
         transf_name, transf, transf_param_grid = transf
         base_classif_name, base_classif, base_classif_param_grid = base_classif
         if(isinstance(transf, list)):
-            C = [("net%d" % i, buildPipeline(T, base_classif))
+            C = [("net%d" % i, buildPipeline(T, base_classif, base_classif_param_grid))
                  for i, T in enumerate(transf)]
 
             param_grid = {}
@@ -186,10 +210,12 @@ def combineTransformerClassifier(transformers, base_classifiers):
                           for k, v in base_classif_param_grid.items()}
                 param_grid.update({**tpgrid, **bcgrid})
             eclf = VotingClassifier(estimators=C, voting='soft')
-            classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
+            #classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
+            classifier = eclf
         else:
-            classifier = buildGridSearch(buildPipeline(transf, base_classif),
-                                         transf_param_grid, base_classif_param_grid)
+            # classifier = buildGridSearch(buildPipeline(transf, base_classif),
+            #                             transf_param_grid, base_classif_param_grid)
+            classifier = buildPipeline(transf, base_classif, base_classif_param_grid)
 
         yield ('%s + %s' % (transf_name, base_classif_name), classifier)
 
@@ -200,10 +226,10 @@ def main(save_file, D):
 
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
     Y, Ynames = D.getMulticlassTargets()
-    # Yset = enumerate(set(Y))
-    # Y, Ymap = pd.factorize(Y)
-    # Ynames = {i: Ynames[oldi] for i, oldi in enumerate(Ymap)}
-    group_ids = D.groupids('bcs')
+    Yset = enumerate(set(Y))
+    Y, Ymap = pd.factorize(Y)
+    Ynames = {i: Ynames[oldi] for i, oldi in enumerate(Ymap)}
+    #group_ids = D.groupids('bcs')
 
     transformers = getDeepTransformers()
     base_classifiers = getBaseClassifiers(('normalizer', StandardScaler()))
@@ -211,26 +237,25 @@ def main(save_file, D):
     # sampler = StratifiedKFold(10, shuffle=True, random_state=RANDOM_STATE)
     # sampler = StratifiedGroupKFold(5, shuffle=True, random_state=RANDOM_STATE)
     # sampler = rpdbcsKFold(5, shuffle=False)
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.8, random_state=RANDOM_STATE)
+    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.25, random_state=RANDOM_STATE)
     # sampler = GroupShuffleSplit(n_splits=5, test_size=0.8, random_state=0)
+    gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
 
     scoring = getMetrics(Ynames)
 
     Results = {}
     for classifier_name, classifier in combineTransformerClassifier(transformers, base_classifiers):
         print(classifier_name)
-        Results[classifier_name] = rpdbcs_cross_validate(classifier, X, Y, groups=group_ids, scoring=scoring,
-                                                         cv=sampler)
-        # classifier.fit(X, Y)
+        Results[classifier_name] = cross_validate(classifier, X, Y, scoring=scoring,
+                                                  cv=sampler)
 
     ictaifeats_names = getICTAI2016FeaturesNames()
     features = D.asDataFrame()[ictaifeats_names].values
     for classif_name, classifier, param_grid in base_classifiers:
         print(classif_name)
         # n_jobs: You may not want all your cores being used.
-        classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1)
-        scores = rpdbcs_cross_validate(classifier, features, Y, groups=group_ids,
-                                       scoring=scoring, cv=sampler)
+        classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1, cv=gridsearch_sampler)
+        scores = cross_validate(classifier, features, Y, scoring=scoring, cv=sampler)
         Results[classif_name] = scores
 
     results_asmatrix = []

@@ -67,7 +67,8 @@ class TripletNetwork(NeuralNetTransformer):
             super().__init__(margin=margin, triplet_selector=triplet_selector)
 
         def forward(self, net_outputs, target):
-            return super().forward(net_outputs, target)[0]
+            loss, non_zero_triplets = super().forward(net_outputs, target)
+            return loss/self.margin, non_zero_triplets
 
     def __init__(self, module, *args, margin_decay_delay=0, margin_decay_value=0.75, criterion=OnlineTripletLossWrapper, **kwargs):
         super().__init__(module,
@@ -76,19 +77,12 @@ class TripletNetwork(NeuralNetTransformer):
                          **kwargs)
         self.margin_decay_delay = margin_decay_delay
         self.margin_decay_value = margin_decay_value
-        self.epoch_number = 0
 
     def run_single_epoch(self, dataset, training, prefix, step_fn, **fit_params):
         super().run_single_epoch(dataset, training, prefix, step_fn, **fit_params)
-        self.epoch_number += 1
         if(self.margin_decay_delay > 0):
-            if(self.epoch_number % self.margin_decay_delay == 0):
+            if(len(self.history) % self.margin_decay_delay == 0):
                 self.criterion_.margin *= self.margin_decay_value
-
-    def get_params(self, deep=True, **kwargs):
-        params = super().get_params(deep, **kwargs)
-        del params['epoch_number']
-        return params
 
     @staticmethod
     def load(fpath: str, module, **kwargs) -> 'TripletNetwork':
@@ -96,6 +90,19 @@ class TripletNetwork(NeuralNetTransformer):
         net.initialize()
         net.load_params(fpath)
         return net
+
+    def get_loss(self, y_pred, y_true, X=None, training=False):
+        y_true = to_tensor(y_true, device=self.device)
+
+        if isinstance(self.criterion_, torch.nn.Module):
+            self.criterion_.train(training)
+
+        old_embeddings = self.infer(X)
+        loss = self.criterion_(y_pred, y_true)
+        if(isinstance(loss, tuple)):
+            loss, non_zero_triplets = loss
+            self.history.record_batch('non_zero_triplets', non_zero_triplets)
+        return loss
 
 
 class TripletNetworkIncremental(TripletNetwork):
