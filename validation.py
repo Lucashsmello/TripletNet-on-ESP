@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.optim as optim
 from rpdbcs.datahandler.dataset import readDataset, getICTAI2016FeaturesNames
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier, BaggingClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
@@ -25,6 +25,7 @@ from tripletnet.callbacks import LoadEndState, LRMonitor, CleanNetCallback
 import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
+from tripletnet.classifiers.TorchBaggingClassifier import TorchBaggingClassifier
 
 RANDOM_STATE = 0
 np.random.seed(RANDOM_STATE)
@@ -42,7 +43,7 @@ def loadRPDBCSData(data_dir='data/data_classified_v6', nsigs=100000, normalize=T
                     remove_first=100, nsigs=nsigs, npoints=10800, dtype=np.float32)
     D.discardMultilabel()
     targets, _ = D.getMulticlassTargets()
-    D.remove(np.where(targets == 3)[0])  # removes desalinhamento
+    # D.remove(np.where(targets == 3)[0])  # removes desalinhamento
     df = D.asDataFrame()
     # D.remove(df[(df['project name'] == 'Baker') & (df['bcs name'] == 'MA15')].index.values)
     print("Dataset length", len(D))
@@ -120,11 +121,7 @@ def getDeepTransformers():
         'margin_decay_value': 0.75, 'margin_decay_delay': 100}
     parameters = {**parameters, **optimizer_parameters}
     deep_transf = []
-    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, **parameters)
-    nets = newEnsemble(3)
-    nets2 = newEnsemble(5)
-    nets3 = newEnsemble(7)
-    nets4 = newEnsemble(9)
+    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, init_random_state=100, **parameters)
 
     # tripletnet_param_grid = {'batch_size': [80],
     #                          'margin_decay_delay': [35, 50],
@@ -134,23 +131,17 @@ def getDeepTransformers():
                              'module__num_outputs': [8],
                              'optimizer__lr': [1e-4, 5e-4, 1e-3]}
 
-    # tripletnet_ensemble = TripletEnsembleNetwork(lmelloEmbeddingNet,
-    #                                              optimizer=optim.Adam, optimizer__weight_decay=1e-4,
-    #                                              device='cuda',
-    #                                              batch_size=80, margin_decay_delay=50,
-    #                                              train_split=None,
-    #                                              iterator_train=BalancedDataLoader, iterator_train__num_workers=0, iterator_train__pin_memory=False,
-    #                                              **parameters)
     # tripletnet_ensemble_param_grid = {'k': [2, 4, 8, 16],
     #                                   'module__num_outputs': [16, 32, 64]}
     # tripletnet_ensemble_param_grid = {'k': [4],
     #                                   'module__num_outputs': [16]}
-    deep_transf.append(("ensemble_tripletnets_3", nets, tripletnet_param_grid))
-    deep_transf.append(("ensemble_tripletnets_5", nets2, tripletnet_param_grid))
-    #deep_transf.append(("ensemble_tripletnets_7", nets3, tripletnet_param_grid))
-    #deep_transf.append(("ensemble_tripletnets_9", nets4, tripletnet_param_grid))
+    ensemble_name = "ensemble_voting"
+    # ensemble_name = "ensemble_bagging"
+    for i in range(25, 3-1, -1):
+        nets = newEnsemble(i)
+        deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
+
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
-    # deep_transf.append(("tripletnet_ensemble", tripletnet_ensemble, tripletnet_ensemble_param_grid))
     return deep_transf
 
 
@@ -195,6 +186,7 @@ def combineTransformerClassifier(transformers, base_classifiers):
         param_grid = {**transf_param_grid, **base_classif_param_grid}
         return GridSearchCV_norefit(clf, param_grid, scoring='f1_macro', cv=gridsearch_sampler)
 
+    rets = []
     for transf, base_classif in itertools.product(transformers, base_classifiers):
         transf_name, transf, transf_param_grid = transf
         base_classif_name, base_classif, base_classif_param_grid = base_classif
@@ -209,27 +201,34 @@ def combineTransformerClassifier(transformers, base_classifiers):
                 bcgrid = {"%s__base_classifier__%s" % (netname, k): v
                           for k, v in base_classif_param_grid.items()}
                 param_grid.update({**tpgrid, **bcgrid})
-            eclf = VotingClassifier(estimators=C, voting='soft')
-            #classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
+            if('voting' in transf_name):
+                eclf = VotingClassifier(estimators=C, voting='soft')
+            elif('bagging' in transf_name):
+                eclf = TorchBaggingClassifier(base_estimator=C[0][1], n_estimators=len(C), bootstrap=True,
+                                              bootstrap_features=False, random_state=RANDOM_STATE)
+            else:
+                raise Exception('ensemble "%s" not recognized!' % transf_name)
+            # classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
             classifier = eclf
         else:
             # classifier = buildGridSearch(buildPipeline(transf, base_classif),
             #                             transf_param_grid, base_classif_param_grid)
             classifier = buildPipeline(transf, base_classif, base_classif_param_grid)
 
-        yield ('%s + %s' % (transf_name, base_classif_name), classifier)
+        final_name = '%s + %s' % (transf_name, base_classif_name)
+        yield (final_name, classifier)
 
 
 def main(save_file, D):
-    global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR
+    global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR, ENSEMBLE_CACHE_DIR
     import pandas as pd
 
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
     Y, Ynames = D.getMulticlassTargets()
-    Yset = enumerate(set(Y))
-    Y, Ymap = pd.factorize(Y)
-    Ynames = {i: Ynames[oldi] for i, oldi in enumerate(Ymap)}
-    #group_ids = D.groupids('bcs')
+    # Yset = enumerate(set(Y))
+    # Y, Ymap = pd.factorize(Y)
+    # Ynames = {i: Ynames[oldi] for i, oldi in enumerate(Ymap)}
+    # group_ids = D.groupids('bcs')
 
     transformers = getDeepTransformers()
     base_classifiers = getBaseClassifiers(('normalizer', StandardScaler()))
@@ -237,7 +236,7 @@ def main(save_file, D):
     # sampler = StratifiedKFold(10, shuffle=True, random_state=RANDOM_STATE)
     # sampler = StratifiedGroupKFold(5, shuffle=True, random_state=RANDOM_STATE)
     # sampler = rpdbcsKFold(5, shuffle=False)
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.25, random_state=RANDOM_STATE)
+    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_STATE)
     # sampler = GroupShuffleSplit(n_splits=5, test_size=0.8, random_state=0)
     gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
 

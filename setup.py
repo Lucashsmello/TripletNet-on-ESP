@@ -1,8 +1,8 @@
 from setuptools import setup
 
-modules = ['networks', 'datahandler', 'trainer', 'callbacks']
+modules = ['networks', 'datahandler', 'trainer', 'callbacks','classifiers.TorchBaggingClassifier']
 setup(name='tripletnet-classifier',
-      version='2.4',
+      version='2.5',
       description='Deep Triplet Network',
       url='https://github.com/Lucashsmello/TripletNet-on-ESP',
       author='Lucas Mello',
