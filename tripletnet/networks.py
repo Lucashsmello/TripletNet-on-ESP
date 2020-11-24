@@ -46,11 +46,15 @@ class NeuralNetTransformer(NeuralNet, TransformerMixin):
         self.init_random_state = init_random_state
 
     def transform(self, X):
+        if(len(X.shape) == 2):
+            X = X.reshape(X.shape[0], 1, X.shape[1])
         return self.predict(X)
 
     def fit(self, X, y=None, **fit_params):
         if(self.dont_train):
             return self
+        if(len(X.shape) == 2):
+            X = X.reshape(X.shape[0], 1, X.shape[1])
         return super().fit(X, y, **fit_params)
 
     def initialize(self):
