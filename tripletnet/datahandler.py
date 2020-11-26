@@ -39,6 +39,8 @@ class BalancedDataLoader(torch.utils.data.DataLoader):
     def __init__(self, dataset, batch_size=1, num_workers=0, collate_fn=None,
                  pin_memory=False, worker_init_fn=None):
         targets = BalancedDataLoader.getTargets(dataset)
+        if(batch_size > len(targets)):
+            batch_size = len(targets)
         if(torch.is_tensor(targets)):
             targets = targets.cpu().numpy()
         nclasses = len(set(targets))
