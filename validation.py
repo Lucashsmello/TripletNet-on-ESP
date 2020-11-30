@@ -26,6 +26,7 @@ import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
 from tripletnet.classifiers.TorchBaggingClassifier import TorchBaggingClassifier
+from tripletnet.TripletNetClassifierMCDropout import TripletNetClassifierMCDropout
 
 RANDOM_STATE = 0
 np.random.seed(RANDOM_STATE)
@@ -60,9 +61,8 @@ def getBaseClassifiers(pre_pipeline=None):
     clfs = []
     knn = KNeighborsClassifier()
     knn_param_grid = {'n_neighbors': [1, 3, 5, 7, 9, 11, 13, 15]}
-    rf = RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1)
-    rf_param_grid = {'n_estimators': [100, 1000],
-                     'max_features': [2, 3, 4, 5]}
+    rf = RandomForestClassifier(random_state=RANDOM_STATE, n_estimators=1000, n_jobs=-1)
+    rf_param_grid = {'max_features': [2, 3, 4, 5]}
     dtree = DecisionTreeClassifier(random_state=RANDOM_STATE, min_impurity_decrease=0.001)
     qda = QuadraticDiscriminantAnalysis()
     qda_param_grid = {'reg_param': [0.0, 1e-6, 1e-5]}
@@ -97,7 +97,7 @@ def getDeepTransformers():
     global DEEP_CACHE_DIR
 
     def newEnsemble(n):
-        return [TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, init_random_state=i+100, **parameters)
+        return [TripletNetwork(module__num_outputs=8, init_random_state=i+100, **parameters)
                 for i in range(n)]
 
     optimizer_parameters = {'weight_decay': 1e-4, 'lr': 1e-3,
@@ -113,6 +113,7 @@ def getDeepTransformers():
     parameters = {
         'callbacks': getCallbacks(),
         'device': 'cuda',
+        'module': lmelloEmbeddingNet,
         'max_epochs': 300,
         'train_split': None,
         'batch_size': 80,
@@ -121,7 +122,7 @@ def getDeepTransformers():
         'margin_decay_value': 0.75, 'margin_decay_delay': 100}
     parameters = {**parameters, **optimizer_parameters}
     deep_transf = []
-    tripletnet = TripletNetwork(lmelloEmbeddingNet, module__num_outputs=8, init_random_state=100, **parameters)
+    tripletnet = TripletNetwork(module__num_outputs=8, init_random_state=100, **parameters)
 
     # tripletnet_param_grid = {'batch_size': [80],
     #                          'margin_decay_delay': [35, 50],
@@ -135,12 +136,14 @@ def getDeepTransformers():
     #                                   'module__num_outputs': [16, 32, 64]}
     # tripletnet_ensemble_param_grid = {'k': [4],
     #                                   'module__num_outputs': [16]}
-    ensemble_name = "ensemble_voting"
-    # ensemble_name = "ensemble_bagging"
-    for i in range(25, 3-1, -1):
+    #ensemble_name = "ensemble_voting"
+    ensemble_name = "ensemble_bagging"
+    for i in range(25, 3-1, -2):
         nets = newEnsemble(i)
         deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
-
+        tripletnet_mcdrop = TripletNetClassifierMCDropout(None, mc_iters=i, module__num_outputs=8, init_random_state=100,
+                                                          cache_dir=PIPELINE_CACHE_DIR, **parameters)
+        deep_transf.append(("mcdropout_tripletnet_%d" % i, tripletnet_mcdrop, {}))
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     return deep_transf
 
@@ -170,12 +173,13 @@ def combineTransformerClassifier(transformers, base_classifiers):
     gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
 
     def buildPipeline(T, base_classif, base_classif_param_grid=None):
-        if(base_classif_param_grid is None):
-            return Pipeline([('transformer', T),
-                             ('base_classifier', base_classif)],
-                            memory=PIPELINE_CACHE_DIR)
+        if(base_classif_param_grid is not None):
+            base_classif = GridSearchCV(base_classif, base_classif_param_grid, cv=gridsearch_sampler, n_jobs=-1)
+        if(isinstance(T, TripletNetClassifierMCDropout)):
+            T.setBaseClassifier(base_classif)
+            return T
         return Pipeline([('transformer', T),
-                         ('base_classifier', GridSearchCV(base_classif, base_classif_param_grid, cv=gridsearch_sampler, n_jobs=-1))],
+                         ('base_classifier', base_classif)],
                         memory=PIPELINE_CACHE_DIR)
 
     def buildGridSearch(clf, transf_param_grid, base_classif_param_grid):
@@ -202,14 +206,13 @@ def combineTransformerClassifier(transformers, base_classifiers):
                           for k, v in base_classif_param_grid.items()}
                 param_grid.update({**tpgrid, **bcgrid})
             if('voting' in transf_name):
-                eclf = VotingClassifier(estimators=C, voting='soft')
+                classifier = VotingClassifier(estimators=C, voting='soft')
             elif('bagging' in transf_name):
-                eclf = TorchBaggingClassifier(base_estimator=C[0][1], n_estimators=len(C), bootstrap=True,
-                                              bootstrap_features=False, random_state=RANDOM_STATE)
+                classifier = TorchBaggingClassifier(base_estimator=C[0][1], n_estimators=len(C), bootstrap=True,
+                                                    bootstrap_features=False, random_state=RANDOM_STATE)
             else:
                 raise Exception('ensemble "%s" not recognized!' % transf_name)
             # classifier = GridSearchCV_norefit(eclf, param_grid, scoring='f1_macro')
-            classifier = eclf
         else:
             # classifier = buildGridSearch(buildPipeline(transf, base_classif),
             #                             transf_param_grid, base_classif_param_grid)
@@ -290,5 +293,5 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outfile', type=str, required=False)
     args = parser.parse_args()
 
-    D = loadRPDBCSData(args.inputdata)
+    D = loadRPDBCSData(args.inputdata, 3000)
     main(args.outfile, D)
