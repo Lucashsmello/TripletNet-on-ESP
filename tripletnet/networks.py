@@ -44,6 +44,7 @@ class NeuralNetTransformer(NeuralNet, TransformerMixin):
         super().__init__(module, *args, **kwargs)
         self.dont_train = dont_train
         self.init_random_state = init_random_state
+        self.dropout_on = False
 
     def transform(self, X):
         if(len(X.shape) == 2):
@@ -63,6 +64,28 @@ class NeuralNetTransformer(NeuralNet, TransformerMixin):
             torch.cuda.manual_seed(self.init_random_state)
             torch.manual_seed(self.init_random_state)
         return super().initialize()
+    
+    def transform_stochastic(self, Xi):
+        self.dropout_on = True
+        ret = self.transform(Xi)
+        self.dropout_on = False
+        return ret
+    
+    def evaluation_step(self, Xi, training=False):
+        if(self.dropout_on):
+            self.check_is_fitted()
+            with torch.set_grad_enabled(training):
+                self.module_.train(True)
+                return self.infer(Xi)
+        else:
+            return super().evaluation_step(Xi, training=training)
+
+    def get_params(self, deep=True, **kwargs):
+        params = super().get_params(deep, **kwargs)
+        del params['dropout_on']
+        return params
+
+
 
 
 class TripletNetwork(NeuralNetTransformer):

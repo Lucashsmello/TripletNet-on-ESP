@@ -1,5 +1,4 @@
 from sklearn.base import TransformerMixin, BaseEstimator
-from joblib import Memory
 import torch
 from torch import nn
 import torch.optim as optim
@@ -26,7 +25,8 @@ import itertools
 from tempfile import mkdtemp
 from shutil import rmtree
 from tripletnet.classifiers.TorchBaggingClassifier import TorchBaggingClassifier
-from tripletnet.TripletNetClassifierMCDropout import TripletNetClassifierMCDropout
+from adabelief_pytorch import AdaBelief
+import os
 
 RANDOM_STATE = 0
 np.random.seed(RANDOM_STATE)
@@ -93,7 +93,6 @@ def getCallbacks():
 
 
 def getDeepTransformers():
-    from adabelief_pytorch import AdaBelief
     global DEEP_CACHE_DIR
 
     def newEnsemble(n):
@@ -136,16 +135,92 @@ def getDeepTransformers():
     #                                   'module__num_outputs': [16, 32, 64]}
     # tripletnet_ensemble_param_grid = {'k': [4],
     #                                   'module__num_outputs': [16]}
-    #ensemble_name = "ensemble_voting"
+    # ensemble_name = "ensemble_voting"
     ensemble_name = "ensemble_bagging"
     for i in range(25, 3-1, -2):
         nets = newEnsemble(i)
         deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
-        tripletnet_mcdrop = TripletNetClassifierMCDropout(None, mc_iters=i, module__num_outputs=8, init_random_state=100,
-                                                          cache_dir=PIPELINE_CACHE_DIR, **parameters)
-        deep_transf.append(("mcdropout_tripletnet_%d" % i, tripletnet_mcdrop, {}))
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     return deep_transf
+
+
+def createNeuralClassifier():
+    """
+    Common neural net classifier.
+    """
+    from siamese_triplet.networks import ClassificationNet
+
+    class MyNeuralNetClassifier(skorch.NeuralNetClassifier):
+        def __init__(self, module, init_random_state, cache_dir,
+                     *args,
+                     criterion=torch.nn.NLLLoss,
+                     train_split=None,
+                     classes=None,
+                     **kwargs):
+            super().__init__(module, *args, criterion=criterion, train_split=train_split, classes=classes, **kwargs)
+            self.init_random_state = init_random_state
+            self.cache_dir = cache_dir
+
+        def initialize(self):
+            if(self.init_random_state is not None):
+                np.random.seed(self.init_random_state)
+                torch.cuda.manual_seed(self.init_random_state)
+                torch.manual_seed(self.init_random_state)
+            return super().initialize()
+
+        def get_cache_filename(self):
+            return "%s/%d-%s.pkl" % (self.cache_dir, self.init_random_state, self.module.__name__[:8])
+
+        def fit(self, X, y, **fit_params):
+            cache_filename = self.get_cache_filename()
+            if(os.path.isfile(cache_filename)):
+                if not self.warm_start or not self.initialized_:
+                    self.initialize()
+                self.load_params(cache_filename)
+                return self
+            super().fit(X, y, **fit_params)
+            self.save_params(cache_filename)
+            return self
+
+    def newEnsemble(n):
+        estimators = [GridSearchCV_norefit(MyNeuralNetClassifier(ClassificationNet, init_random_state=100+i, cache_dir=DEEP_CACHE_DIR, **parameters),
+                                           param_grid={}, scoring='f1_macro', cv=gridsearch_sampler)
+                      for i in range(n)]
+        # estimators = [MyNeuralNetClassifier(ClassificationNet, init_random_state=100+i, cache_dir=DEEP_CACHE_DIR, **parameters)
+        #              for i in range(n)]
+        estimators = [('net%d' % i, clf) for i, clf in enumerate(estimators)]
+        return VotingClassifier(estimators=estimators, voting='soft')
+
+    gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
+
+    optimizer_parameters = {'weight_decay': 1e-4, 'lr': 1e-3,
+                            'eps': 1e-16, 'betas': (0.9, 0.999),
+                            'weight_decouple': True, 'rectify': False}
+    optimizer_parameters = {"optimizer__"+key: v for key, v in optimizer_parameters.items()}
+    optimizer_parameters['optimizer'] = AdaBelief
+
+    checkpoint_callback = skorch.callbacks.Checkpoint(dirname=DEEP_CACHE_DIR, monitor='train_loss_best')
+    # É possível dar nomes ao callbacks para poder usar gridsearch neles: https://skorch.readthedocs.io/en/stable/user/callbacks.html#learning-rate-schedulers
+
+    callbacks = [checkpoint_callback, LoadEndState(checkpoint_callback)]
+
+    parameters = {
+        'callbacks': callbacks,
+        'device': 'cuda',
+        'max_epochs': 300,
+        'train_split': None,
+        'batch_size': 80,
+        'iterator_train': BalancedDataLoader, 'iterator_train__num_workers': 0, 'iterator_train__pin_memory': False,
+        'module__embedding_net': lmelloEmbeddingNet(8), 'module__n_classes': 5}
+    parameters = {**parameters, **optimizer_parameters}
+    convnet = skorch.NeuralNetClassifier(ClassificationNet, **parameters)
+
+    ret = []
+    ret.append(('convnet', GridSearchCV_norefit(convnet, param_grid={}, scoring='f1_macro', cv=gridsearch_sampler)))
+    for i in range(3, 2, -2):
+        ret.append(('ensemble_convnet_%d' % i, newEnsemble(i)))
+
+    return ret
 
 
 def getMetrics(labels_names):
@@ -175,9 +250,7 @@ def combineTransformerClassifier(transformers, base_classifiers):
     def buildPipeline(T, base_classif, base_classif_param_grid=None):
         if(base_classif_param_grid is not None):
             base_classif = GridSearchCV(base_classif, base_classif_param_grid, cv=gridsearch_sampler, n_jobs=-1)
-        if(isinstance(T, TripletNetClassifierMCDropout)):
-            T.setBaseClassifier(base_classif)
-            return T
+
         return Pipeline([('transformer', T),
                          ('base_classifier', base_classif)],
                         memory=PIPELINE_CACHE_DIR)
@@ -226,6 +299,10 @@ def main(save_file, D):
     global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR, ENSEMBLE_CACHE_DIR
     import pandas as pd
 
+    TEST_TRIPLETNET = False
+    TEST_CONVNET = True
+    TEST_BASECLASSIFIERS = True
+
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
     Y, Ynames = D.getMulticlassTargets()
     # Yset = enumerate(set(Y))
@@ -236,29 +313,39 @@ def main(save_file, D):
     transformers = getDeepTransformers()
     base_classifiers = getBaseClassifiers(('normalizer', StandardScaler()))
 
-    # sampler = StratifiedKFold(10, shuffle=True, random_state=RANDOM_STATE)
+    sampler = StratifiedKFold(10, shuffle=True, random_state=RANDOM_STATE)
     # sampler = StratifiedGroupKFold(5, shuffle=True, random_state=RANDOM_STATE)
     # sampler = rpdbcsKFold(5, shuffle=False)
-    sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_STATE)
+    # sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=RANDOM_STATE)
     # sampler = GroupShuffleSplit(n_splits=5, test_size=0.8, random_state=0)
     gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
 
     scoring = getMetrics(Ynames)
 
     Results = {}
-    for classifier_name, classifier in combineTransformerClassifier(transformers, base_classifiers):
-        print(classifier_name)
-        Results[classifier_name] = cross_validate(classifier, X, Y, scoring=scoring,
-                                                  cv=sampler)
 
-    ictaifeats_names = getICTAI2016FeaturesNames()
-    features = D.asDataFrame()[ictaifeats_names].values
-    for classif_name, classifier, param_grid in base_classifiers:
-        print(classif_name)
-        # n_jobs: You may not want all your cores being used.
-        classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1, cv=gridsearch_sampler)
-        scores = cross_validate(classifier, features, Y, scoring=scoring, cv=sampler)
-        Results[classif_name] = scores
+    if(TEST_CONVNET):
+        classifiers = createNeuralClassifier()
+        for clf_name, clf in classifiers:
+            print(clf_name, clf.__class__.__name__)
+            Results[clf_name] = cross_validate(clf, X, Y, scoring=scoring,
+                                               cv=sampler)
+
+    if(TEST_TRIPLETNET):
+        for classifier_name, classifier in combineTransformerClassifier(transformers, base_classifiers):
+            print(classifier_name)
+            Results[classifier_name] = cross_validate(classifier, X, Y, scoring=scoring,
+                                                      cv=sampler)
+
+    if(TEST_BASECLASSIFIERS):
+        ictaifeats_names = getICTAI2016FeaturesNames()
+        features = D.asDataFrame()[ictaifeats_names].values
+        for classif_name, classifier, param_grid in base_classifiers:
+            print(classif_name)
+            # n_jobs: You may not want all your cores being used.
+            classifier = GridSearchCV(classifier, param_grid, scoring='f1_macro', n_jobs=-1, cv=gridsearch_sampler)
+            scores = cross_validate(classifier, features, Y, scoring=scoring, cv=sampler)
+            Results[classif_name] = scores
 
     results_asmatrix = []
     for classif_name, result in Results.items():
@@ -293,5 +380,5 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outfile', type=str, required=False)
     args = parser.parse_args()
 
-    D = loadRPDBCSData(args.inputdata, 3000)
+    D = loadRPDBCSData(args.inputdata)
     main(args.outfile, D)
