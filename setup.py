@@ -10,7 +10,7 @@ setup(name='tripletnet-classifier',
       license='public',
       py_modules=["tripletnet.%s" % m for m in modules],
       install_requires=[
-          "siamese-triplet",
+          "siamese-triplet @ git+https://github.com/Lucashsmello/siamese-triplet",
           "torch",
           "torchvision",
           "scikit-learn >= 0.22",
