@@ -138,8 +138,11 @@ def getDeepTransformers():
     # ensemble_name = "ensemble_voting"
     ensemble_name = "ensemble_bagging"
     for i in range(25, 3-1, -2):
-        nets = newEnsemble(i)
-        deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
+        #nets = newEnsemble(i)
+        #deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
+        tripletnet_dropouton = [TripletNetwork(
+            module__num_outputs=8, init_random_state=100, dropout_on=True, **parameters)] * i
+        deep_transf.append(("tripletnet_dropouton_%d" % i, tripletnet_dropouton, tripletnet_param_grid))
     deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     return deep_transf
 
@@ -278,7 +281,7 @@ def combineTransformerClassifier(transformers, base_classifiers):
                 bcgrid = {"%s__base_classifier__%s" % (netname, k): v
                           for k, v in base_classif_param_grid.items()}
                 param_grid.update({**tpgrid, **bcgrid})
-            if('voting' in transf_name):
+            if('voting' in transf_name or 'dropouton' in transf_name):
                 classifier = VotingClassifier(estimators=C, voting='soft')
             elif('bagging' in transf_name):
                 classifier = TorchBaggingClassifier(base_estimator=C[0][1], n_estimators=len(C), bootstrap=True,
@@ -299,8 +302,8 @@ def main(save_file, D):
     global DEEP_CACHE_DIR, PIPELINE_CACHE_DIR, ENSEMBLE_CACHE_DIR
     import pandas as pd
 
-    TEST_TRIPLETNET = False
-    TEST_CONVNET = True
+    TEST_TRIPLETNET = True
+    TEST_CONVNET = False
     TEST_BASECLASSIFIERS = True
 
     X = np.expand_dims(D.asMatrix()[:, :6100], axis=1)
