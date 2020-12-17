@@ -67,9 +67,9 @@ def getBaseClassifiers(pre_pipeline=None):
     qda = QuadraticDiscriminantAnalysis()
     qda_param_grid = {'reg_param': [0.0, 1e-6, 1e-5]}
     clfs.append(("knn", knn, knn_param_grid))
-    clfs.append(("DT", dtree, {}))
+    #clfs.append(("DT", dtree, {}))
     clfs.append(("RF", rf, rf_param_grid))
-    clfs.append(("NB", GaussianNB(), {}))
+    #clfs.append(("NB", GaussianNB(), {}))
     clfs.append(("QDA", qda, qda_param_grid))
 
     if(pre_pipeline is not None):
@@ -137,13 +137,13 @@ def getDeepTransformers():
     #                                   'module__num_outputs': [16]}
     # ensemble_name = "ensemble_voting"
     ensemble_name = "ensemble_bagging"
-    for i in range(25, 3-1, -2):
+    for i in range(21, 3-1, -2):
         #nets = newEnsemble(i)
         #deep_transf.append(("%s_tripletnets_%d" % (ensemble_name, i), nets, tripletnet_param_grid))
         tripletnet_dropouton = [TripletNetwork(
             module__num_outputs=8, init_random_state=100, dropout_on=True, **parameters)] * i
         deep_transf.append(("tripletnet_dropouton_%d" % i, tripletnet_dropouton, tripletnet_param_grid))
-    deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
+    #deep_transf.append(("tripletnet", tripletnet, tripletnet_param_grid))
     return deep_transf
 
 
@@ -159,8 +159,10 @@ def createNeuralClassifier():
                      criterion=torch.nn.NLLLoss,
                      train_split=None,
                      classes=None,
+                     optimizer__lr=1e-3,
                      **kwargs):
-            super().__init__(module, *args, criterion=criterion, train_split=train_split, classes=classes, **kwargs)
+            super().__init__(module, *args, criterion=criterion, train_split=train_split,
+                             classes=classes, optimizer__lr=optimizer__lr, **kwargs)
             self.init_random_state = init_random_state
             self.cache_dir = cache_dir
 
@@ -172,7 +174,7 @@ def createNeuralClassifier():
             return super().initialize()
 
         def get_cache_filename(self):
-            return "%s/%d-%s.pkl" % (self.cache_dir, self.init_random_state, self.module.__name__[:8])
+            return "%s/%d-%.5f-%s.pkl" % (self.cache_dir, self.optimizer__lr, self.init_random_state, self.module.__name__[:8])
 
         def fit(self, X, y, **fit_params):
             cache_filename = self.get_cache_filename()
@@ -187,7 +189,7 @@ def createNeuralClassifier():
 
     def newEnsemble(n):
         estimators = [GridSearchCV_norefit(MyNeuralNetClassifier(ClassificationNet, init_random_state=100+i, cache_dir=DEEP_CACHE_DIR, **parameters),
-                                           param_grid={}, scoring='f1_macro', cv=gridsearch_sampler)
+                                           param_grid=grid_params, scoring='f1_macro', cv=gridsearch_sampler)
                       for i in range(n)]
         # estimators = [MyNeuralNetClassifier(ClassificationNet, init_random_state=100+i, cache_dir=DEEP_CACHE_DIR, **parameters)
         #              for i in range(n)]
@@ -195,6 +197,7 @@ def createNeuralClassifier():
         return VotingClassifier(estimators=estimators, voting='soft')
 
     gridsearch_sampler = StratifiedShuffleSplit(n_splits=1, test_size=0.11, random_state=RANDOM_STATE)
+    grid_params = {'optimizer__lr': [1e-4, 5e-4, 1e-3]}
 
     optimizer_parameters = {'weight_decay': 1e-4, 'lr': 1e-3,
                             'eps': 1e-16, 'betas': (0.9, 0.999),
@@ -219,8 +222,8 @@ def createNeuralClassifier():
     convnet = skorch.NeuralNetClassifier(ClassificationNet, **parameters)
 
     ret = []
-    ret.append(('convnet', GridSearchCV_norefit(convnet, param_grid={}, scoring='f1_macro', cv=gridsearch_sampler)))
-    for i in range(3, 2, -2):
+    ret.append(('convnet', GridSearchCV_norefit(convnet, param_grid=grid_params, scoring='f1_macro', cv=gridsearch_sampler)))
+    for i in range(13, 2, -2):
         ret.append(('ensemble_convnet_%d' % i, newEnsemble(i)))
 
     return ret

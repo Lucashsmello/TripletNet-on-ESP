@@ -5,26 +5,14 @@ import numpy as np
 import torch
 
 
-class _TripletNetworkDropout(TripletNetwork):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def evaluation_step(self, Xi, training=False):
-        self.check_is_fitted()
-        with torch.set_grad_enabled(training):
-            self.module_.train(True)
-            return self.infer(Xi)
-
-
 class TripletNetClassifierMCDropout(BaseEstimator, ClassifierMixin):
     def __init__(self, base_classifier, *args, mc_iters=20, cache_dir, **kwargs):
         super().__init__()
-        self.tripletnet = _TripletNetworkDropout(*args, **kwargs)
+        self.tripletnet = TripletNetwork(*args, **kwargs)
         self.cache_dir = cache_dir
         if(base_classifier is not None):
             self.setBaseClassifier(base_classifier)
         self.mc_iters = mc_iters
-        
 
     def setBaseClassifier(self, base_classifier):
         self.base_classifier = base_classifier
@@ -44,7 +32,7 @@ class TripletNetClassifierMCDropout(BaseEstimator, ClassifierMixin):
         return self.predict_proba(X).argmax(axis=1)
 
     def predict_proba(self, X):
-        preds = [self.pipeline.predict_proba(X) for _ in range(self.mc_iters)]
+        preds = [self.pipeline.predict_proba_stochastic(X) for _ in range(self.mc_iters)]
         return np.mean(preds, axis=0)
 
     def get_params(self, deep=True, **kwargs):
