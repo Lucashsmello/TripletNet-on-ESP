@@ -1,6 +1,6 @@
 from setuptools import setup
 
-modules = ['networks', 'datahandler', 'trainer', 'callbacks','classifiers.TorchBaggingClassifier']
+modules = ['networks', 'datahandler', 'trainer', 'callbacks','classifiers.TorchBaggingClassifier', 'tripletnet.TripletNetClassifierMCDropout']
 setup(name='tripletnet-classifier',
       version='2.6',
       description='Deep Triplet Network',
