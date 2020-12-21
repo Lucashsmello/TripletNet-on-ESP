@@ -1,5 +1,5 @@
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.pipeline import Pipeline
+from tripletnet.utils import PipelineExtended
 from tripletnet.networks import TripletNetwork
 import numpy as np
 import torch
@@ -17,12 +17,12 @@ class TripletNetClassifierMCDropout(BaseEstimator, ClassifierMixin):
     def setBaseClassifier(self, base_classifier):
         self.base_classifier = base_classifier
         if(self.cache_dir is None):
-            self.pipeline = Pipeline([('transformer', self.tripletnet),
-                                      ('base_classifier', base_classifier)])
+            self.pipeline = PipelineExtended([('transformer', self.tripletnet),
+                                              ('base_classifier', base_classifier)])
         else:
-            self.pipeline = Pipeline([('transformer', self.tripletnet),
-                                      ('base_classifier', base_classifier)],
-                                     memory=self.cache_dir)
+            self.pipeline = PipelineExtended([('transformer', self.tripletnet),
+                                              ('base_classifier', base_classifier)],
+                                             memory=self.cache_dir)
 
     def fit(self, X, y):
         self.pipeline.fit(X, y)
